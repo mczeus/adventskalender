@@ -72,6 +72,12 @@ def valid_owner(value):
         return ALL_USERS
     return valid_username(value)
 
+def valid_internal_label(value):
+    value = str(value or "").strip()
+    if len(value) > 120 or any(ord(ch) < 32 for ch in value):
+        return None
+    return value
+
 def owner_label(value):
     return "Alle Benutzer" if value == ALL_USERS else value
 
@@ -83,13 +89,18 @@ def init_db():
     with db() as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS users (name TEXT PRIMARY KEY, salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS admin (id INTEGER PRIMARY KEY CHECK (id = 1), salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
-        conn.execute("CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, reusable INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL DEFAULT '', internal_label TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, reusable INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
         try:
             conn.execute("ALTER TABLE codes ADD COLUMN reusable INTEGER NOT NULL DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+        try:
+            conn.execute("ALTER TABLE codes ADD COLUMN internal_label TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
         conn.execute("CREATE TABLE IF NOT EXISTS redeemed (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL, redeemed_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS redemption_events (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL, redeemed_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS user_input_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_name TEXT NOT NULL, entered_code TEXT NOT NULL, result TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         migrated = conn.execute("SELECT value FROM app_meta WHERE key = 'redeemed_events_migrated'").fetchone()
         if not migrated:
@@ -166,10 +177,34 @@ def user_data(user):
     entries = [dict(row) for row in rows]
     return {"user": user, "entries": entries, "total": round(sum(float(x["amount"]) for x in entries), 2)}
 
+def clean_entered_code(value):
+    value = str(value or "").strip()
+    value = value[:120]
+    return "".join(ch for ch in value if ord(ch) >= 32)
+
+def log_user_input(user, entered_code, result, detail=""):
+    try:
+        with DB_LOCK, db() as conn:
+            conn.execute(
+                "INSERT INTO user_input_log (user_name, entered_code, result, detail, created_at) VALUES (?, ?, ?, ?, ?)",
+                (str(user), clean_entered_code(entered_code), str(result)[:80], str(detail)[:240], now())
+            )
+            conn.commit()
+    except Exception as exc:
+        # Logging must never prevent the actual voucher request from completing.
+        print(f"WARNUNG: Benutzereingabe konnte nicht protokolliert werden: {exc}")
+
+def user_input_log():
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, user_name, entered_code, result, detail, created_at FROM user_input_log ORDER BY id DESC"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
 def admin_dashboard():
     with db() as conn:
         code_rows = conn.execute("""
-            SELECT c.code, c.name, c.amount, c.description, c.active, c.reusable,
+            SELECT c.code, c.name, c.amount, c.description, c.internal_label, c.active, c.reusable,
                    (SELECT e.name FROM redemption_events e WHERE e.code = c.code ORDER BY e.id DESC LIMIT 1) AS redeemed_by,
                    (SELECT e.redeemed_at FROM redemption_events e WHERE e.code = c.code ORDER BY e.id DESC LIMIT 1) AS redeemed_at
             FROM codes c
@@ -180,7 +215,7 @@ def admin_dashboard():
     codes = [dict(row) for row in code_rows]
     for code in codes:
         code["owner_label"] = owner_label(code["name"])
-    return {"users": [row["name"] for row in user_rows], "codes": codes, "redeemed": all_redeemed(), "totals": totals()}
+    return {"users": [row["name"] for row in user_rows], "codes": codes, "redeemed": all_redeemed(), "totals": totals(), "user_inputs": user_input_log()}
 
 def sync_iobroker():
     if not IOBROKER_ENABLED:
@@ -316,15 +351,23 @@ class Handler(BaseHTTPRequestHandler):
             user = user_session(self)
             if not user:
                 self.send_json({"error": "Nicht angemeldet."}, 401); return
-            code = str(payload.get("code", "")).strip().upper()
+            raw_code = payload.get("code", "")
+            entered_code = clean_entered_code(raw_code)
+            code = entered_code.upper()
             if len(code) != 4 or not code.isalnum():
-                self.send_json({"error": "Bitte genau vier Buchstaben oder Zahlen eingeben."}, 400); return
+                detail = "Bitte genau vier Buchstaben oder Zahlen eingeben."
+                log_user_input(user, entered_code, "Ungueltiges Format", detail)
+                self.send_json({"error": detail}, 400); return
             with db() as conn:
                 voucher = conn.execute("SELECT code, name, amount, description, active, reusable FROM codes WHERE code = ?", (code,)).fetchone()
             if not voucher or not voucher["active"]:
-                self.send_json({"error": "Dieser Gutscheincode ist ungueltig oder deaktiviert."}, 400); return
+                detail = "Dieser Gutscheincode ist ungueltig oder deaktiviert."
+                log_user_input(user, entered_code, "Ungueltiger Code", detail)
+                self.send_json({"error": detail}, 400); return
             if voucher["name"] != ALL_USERS and username_key(voucher["name"]) != username_key(user):
-                self.send_json({"error": f"Dieser Code gehoert zu {owner_label(voucher['name'])}."}, 403); return
+                detail = f"Dieser Code gehoert zu {owner_label(voucher['name'])}."
+                log_user_input(user, entered_code, "Falscher Benutzer", detail)
+                self.send_json({"error": detail}, 403); return
             try:
                 with DB_LOCK, db() as conn:
                     if not voucher["reusable"]:
@@ -334,7 +377,11 @@ class Handler(BaseHTTPRequestHandler):
                     conn.execute("INSERT INTO redemption_events (code, name, amount, description, redeemed_at) VALUES (?, ?, ?, ?, ?)", (code, user, voucher["amount"], voucher["description"], now()))
                     conn.commit()
             except sqlite3.IntegrityError:
-                self.send_json({"error": "Dieser Code wurde bereits eingeloest."}, 409); return
+                detail = "Dieser Code wurde bereits eingeloest."
+                log_user_input(user, entered_code, "Bereits eingeloest", detail)
+                self.send_json({"error": detail}, 409); return
+            detail = "Code erfolgreich eingeloest."
+            log_user_input(user, entered_code, "Erfolgreich", detail)
             sync = sync_iobroker()
             self.send_json({"ok": True, "entry": {"code": code, "name": user, "amount": voucher["amount"], "description": voucher["description"]}, "data": user_data(user), "sync": sync}); return
         if path == "/api/sync":
@@ -345,15 +392,16 @@ class Handler(BaseHTTPRequestHandler):
             code = urllib.parse.unquote(path[len("/api/admin/code/"):-len("/save")]).strip("/").upper()
             name = valid_owner(payload.get("name"))
             description = str(payload.get("description", "")).strip()
-            reusable = 1 if payload.get("reusable") in (True, 1, "1", "true", "on", "yes") else 0
+            internal_label = valid_internal_label(payload.get("internal_label"))
+            reusable = 1 if payload.get("reusable") in (True, 1, "true", "on", "yes") else 0
             try:
                 amount = round(float(payload.get("amount", 0)), 2)
             except (TypeError, ValueError):
                 amount = -1
-            if not name or amount < 0:
-                self.send_json({"error": "Benutzername oder Betrag ist ungueltig."}, 400); return
+            if not name or internal_label is None or amount < 0:
+                self.send_json({"error": "Benutzername, interne Bezeichnung oder Betrag ist ungueltig."}, 400); return
             with DB_LOCK, db() as conn:
-                result = conn.execute("UPDATE codes SET name = ?, amount = ?, description = ?, reusable = ?, updated_at = ? WHERE code = ?", (name, amount, description, reusable, now(), code))
+                result = conn.execute("UPDATE codes SET name = ?, amount = ?, description = ?, internal_label = ?, reusable = ?, updated_at = ? WHERE code = ?", (name, amount, description, internal_label, reusable, now(), code))
                 if result.rowcount == 0:
                     self.send_json({"error": "Code nicht gefunden."}, 404); return
                 conn.commit()
@@ -377,15 +425,16 @@ class Handler(BaseHTTPRequestHandler):
             code = str(payload.get("code", "")).strip().upper()
             name = payload.get("name")
             description = str(payload.get("description", "")).strip()
-            reusable = 1 if payload.get("reusable") in (True, 1, "1", "true", "on", "yes") else 0
+            internal_label = valid_internal_label(payload.get("internal_label"))
+            reusable = 1 if payload.get("reusable") in (True, 1, "true", "on", "yes") else 0
             try: amount = round(float(payload.get("amount", 0)), 2)
             except (TypeError, ValueError): amount = -1
             name = valid_owner(name)
-            if len(code) != 4 or not code.isalnum() or not name or amount < 0:
-                self.send_json({"error": "Code, Benutzername oder Betrag ist ungueltig."}, 400); return
+            if len(code) != 4 or not code.isalnum() or not name or internal_label is None or amount < 0:
+                self.send_json({"error": "Code, Benutzername, interne Bezeichnung oder Betrag ist ungueltig."}, 400); return
             with DB_LOCK, db() as conn:
                 try:
-                    conn.execute("INSERT INTO codes (code, name, amount, description, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?)", (code, name, amount, description, reusable, now(), now()))
+                    conn.execute("INSERT INTO codes (code, name, amount, description, internal_label, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)", (code, name, amount, description, internal_label, reusable, now(), now()))
                     conn.commit()
                 except sqlite3.IntegrityError:
                     self.send_json({"error": "Dieser Code existiert bereits."}, 409); return
@@ -410,15 +459,16 @@ class Handler(BaseHTTPRequestHandler):
         payload = json_body(self)
         name = valid_owner(payload.get("name"))
         description = str(payload.get("description", "")).strip()
-        reusable = 1 if payload.get("reusable") in (True, 1, "1", "true", "on", "yes") else 0
+        internal_label = valid_internal_label(payload.get("internal_label"))
+        reusable = 1 if payload.get("reusable") in (True, 1, "true", "on", "yes") else 0
         try: amount = round(float(payload.get("amount", 0)), 2)
         except (TypeError, ValueError): amount = -1
-        if amount < 0:
-            self.send_json({"error": "Der Betrag muss 0 oder groesser sein."}, 400); return
+        if amount < 0 or internal_label is None:
+            self.send_json({"error": "Interne Bezeichnung oder Betrag ist ungueltig."}, 400); return
         if not name:
             self.send_json({"error": "Benutzername ist ungueltig."}, 400); return
         with DB_LOCK, db() as conn:
-            result = conn.execute("UPDATE codes SET name = ?, amount = ?, description = ?, reusable = ?, updated_at = ? WHERE code = ?", (name, amount, description, reusable, now(), code))
+            result = conn.execute("UPDATE codes SET name = ?, amount = ?, description = ?, internal_label = ?, reusable = ?, updated_at = ? WHERE code = ?", (name, amount, description, internal_label, reusable, now(), code))
             if result.rowcount == 0:
                 self.send_json({"error": "Code nicht gefunden."}, 404); return
             conn.commit()
@@ -430,12 +480,17 @@ class Handler(BaseHTTPRequestHandler):
             with DB_LOCK, db() as conn:
                 conn.execute("DELETE FROM redeemed")
                 conn.execute("DELETE FROM redemption_events")
-                conn.execute("DELETE FROM codes")
+                conn.execute("DELETE FROM codes WHERE code <> ?", ("FROH",))
+                froh_name, froh_amount, froh_description = CODES["FROH"]
+                timestamp = now()
+                conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, internal_label, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)", ("FROH", froh_name, froh_amount, froh_description, "", timestamp, timestamp))
                 conn.commit()
             sync = sync_iobroker()
             self.send_json({"ok": True, "data": admin_dashboard(), "sync": sync}); return
         if path.startswith("/api/admin/code/"):
             code = urllib.parse.unquote(path[len("/api/admin/code/"):]).strip("/").upper()
+            if code == "FROH":
+                self.send_json({"error": "Der Standardcode FROH kann nicht geloescht werden."}, 400); return
             with DB_LOCK, db() as conn:
                 result = conn.execute("DELETE FROM codes WHERE code = ?", (code,))
                 conn.execute("DELETE FROM redeemed WHERE code = ?", (code,))

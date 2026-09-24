@@ -96,3 +96,15 @@ Die SQLite-Datei liegt im Container unter `/data/gutscheine.db` und bleibt bei C
 Beim normalen Redeploy das Volume `gutscheine_data` nicht loeschen. Das Löschen aller Codes im Admin-Bereich leert dagegen bewusst die gespeicherten Gutschein- und Einlösungsdaten. Darin befinden sich Passwoerter, eingelöste Codes und Admin-Einstellungen.
 
 Wenn die Passwoerter komplett neu eingerichtet werden sollen, muss das Volume bewusst geloescht werden. Dadurch werden auch eingelöste Codes und Gutschein-Aenderungen geloescht.
+
+
+## Standardcode und interne Bezeichnung
+
+- Der Standardcode `FROH` bleibt beim Löschen aller Codes erhalten und kann auch einzeln nicht gelöscht werden.
+- Für jeden Code kann im Admin-Bereich eine interne Bezeichnung gepflegt werden. Sie wird weder in der Benutzeransicht noch in der öffentlichen Einlösungshistorie oder der ioBroker-Synchronisierung ausgegeben.
+- Beim Upgrade bestehender Datenbanken wird die zusätzliche Spalte automatisch angelegt.
+
+
+## Benutzer-Eingabeprotokoll
+
+Im Admin-Bereich gibt es einen separaten, dauerhaft gespeicherten Bereich **Benutzereingaben**. Dort werden angemeldete Gutscheincode-Eingaben mit Zeitpunkt, Benutzer, Eingabe, Ergebnis und Hinweis protokolliert. Erfasst werden erfolgreiche Einlösungen ebenso wie ungültige Codes, falsche Benutzer, ungültige Formate und bereits eingelöste Codes. Das Protokoll wird beim Löschen aller Codes nicht gelöscht und wird nicht an ioBroker übertragen.
