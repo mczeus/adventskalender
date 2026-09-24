@@ -6,6 +6,7 @@ services:
     ports:
       - "8080:8080"
     environment:
+      TZ: "Europe/Berlin"
       PORT: "8080"
       IOBROKER_ENABLED: "false"
       IOBROKER_URL: "http://192.168.1.8:8087"

@@ -8,6 +8,7 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -21,6 +22,12 @@ IOBROKER_URL = os.environ.get("IOBROKER_URL", "").rstrip("/")
 IOBROKER_ENABLED = os.environ.get("IOBROKER_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
 DEFAULT_IOBROKER_VOUCHERS = "javascript.0.Adventskalender.gutscheine"
 DEFAULT_IOBROKER_TOTALS = "javascript.0.Adventskalender.betraege"
+TIMEZONE_NAME = os.environ.get("TZ", "Europe/Berlin")
+try:
+    APP_TIMEZONE = ZoneInfo(TIMEZONE_NAME)
+except ZoneInfoNotFoundError:
+    print(f"WARNUNG: Zeitzone {TIMEZONE_NAME!r} nicht gefunden; UTC wird verwendet.")
+    APP_TIMEZONE = timezone.utc
 ALL_USERS = "__ALL_USERS__"
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "change-this-session-secret")
 if SESSION_SECRET == "change-this-session-secret":
@@ -57,7 +64,7 @@ def db():
     return connection
 
 def now():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(APP_TIMEZONE).isoformat()
 
 def valid_username(value):
     value = str(value or "").strip()
