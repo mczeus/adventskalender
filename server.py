@@ -450,9 +450,9 @@ class Handler(BaseHTTPRequestHandler):
                 log_user_input(user, entered_code, "Ungueltiger Code", detail)
                 self.send_json({"error": detail}, 400); return
             if voucher["name"] != ALL_USERS and username_key(voucher["name"]) != username_key(user):
-                detail = f"Dieser Code gehoert zu {owner_label(voucher['name'])}."
-                log_user_input(user, entered_code, "Falscher Benutzer", detail)
-                self.send_json({"error": detail}, 403); return
+                detail = "Dieser Gutscheincode ist ungueltig."
+                log_user_input(user, entered_code, "Ungueltiger Code", detail)
+                self.send_json({"error": detail}, 400); return
             try:
                 with DB_LOCK, db() as conn:
                     if not voucher["reusable"]:
