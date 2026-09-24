@@ -1,0 +1,14 @@
+services:
+  weihnachts-gutscheine:
+    build: .
+    container_name: weihnachts-gutscheine
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      IOBROKER_URL: "http://192.168.1.8:8087"
+      # Nach dem ersten Start unbedingt einen eigenen langen Wert setzen.
+      SESSION_SECRET: "bitte-durch-einen-langen-zufaelligen-wert-ersetzen"
+    volumes:
+      - ./data:/data
