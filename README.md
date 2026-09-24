@@ -36,6 +36,7 @@ docker compose up -d --build
    - neue Codes mit einem angelegten Benutzernamen anlegen
    - Codes für **Alle Benutzer** anlegen; jeder solcher Code kann insgesamt nur einmal eingelöst werden
    - Codes als **immer gültig / mehrfach einlösbar** markieren
+   - Änderungen über einen gemeinsamen Speichervorgang zuverlässig in die Datenbank schreiben
    - einzelne Codes vollständig löschen
    - alle Codes und die Einlösungshistorie vollständig löschen
    - Einloesungen rueckgaengig machen

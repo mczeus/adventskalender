@@ -336,6 +336,25 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/sync":
             if not session_info(self): self.send_json({"error": "Nicht angemeldet."}, 401); return
             self.send_json(sync_iobroker()); return
+        if path.startswith("/api/admin/code/") and path.endswith("/save"):
+            if not self.require_admin(): return
+            code = urllib.parse.unquote(path[len("/api/admin/code/"):-len("/save")]).strip("/").upper()
+            name = valid_owner(payload.get("name"))
+            description = str(payload.get("description", "")).strip()
+            reusable = 1 if payload.get("reusable") in (True, 1, "1", "true", "on", "yes") else 0
+            try:
+                amount = round(float(payload.get("amount", 0)), 2)
+            except (TypeError, ValueError):
+                amount = -1
+            if not name or amount < 0:
+                self.send_json({"error": "Benutzername oder Betrag ist ungueltig."}, 400); return
+            with DB_LOCK, db() as conn:
+                result = conn.execute("UPDATE codes SET name = ?, amount = ?, description = ?, reusable = ?, updated_at = ? WHERE code = ?", (name, amount, description, reusable, now(), code))
+                if result.rowcount == 0:
+                    self.send_json({"error": "Code nicht gefunden."}, 404); return
+                conn.commit()
+            sync = sync_iobroker()
+            self.send_json({"ok": True, "code": code, "data": admin_dashboard(), "sync": sync}); return
         if path.startswith("/api/admin/code/") and path.endswith("/owner"):
             if not self.require_admin(): return
             code = urllib.parse.unquote(path[len("/api/admin/code/"):-len("/owner")]).strip("/").upper()
