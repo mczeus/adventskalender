@@ -108,3 +108,20 @@ Wenn die Passwoerter komplett neu eingerichtet werden sollen, muss das Volume be
 ## Benutzer-Eingabeprotokoll
 
 Im Admin-Bereich gibt es einen separaten, dauerhaft gespeicherten Bereich **Benutzereingaben**. Dort werden angemeldete Gutscheincode-Eingaben mit Zeitpunkt, Benutzer, Eingabe, Ergebnis und Hinweis protokolliert. Erfasst werden erfolgreiche Einlösungen ebenso wie ungültige Codes, falsche Benutzer, ungültige Formate und bereits eingelöste Codes. Das Protokoll wird beim Löschen aller Codes nicht gelöscht und wird nicht an ioBroker übertragen.
+
+
+## Standardcode FROH
+
+`FROH` ist dauerhaft vorhanden, kostet 0,00 EUR und ist als mehrfach einlösbarer Code konfiguriert. Er kann von Benutzern wiederholt eingelöst werden und bleibt auch nach dem Löschen aller anderen Codes erhalten.
+
+
+## IoBroker-Konfiguration im Admin-Bereich
+
+Die ioBroker-Synchronisierung kann nach der Anmeldung direkt im Admin-Bereich aktiviert oder deaktiviert werden. Dort lassen sich auch die ioBroker-Adresse sowie die beiden Ziel-Datenpunkte ändern. Die Einstellungen werden dauerhaft in SQLite gespeichert und bleiben bei Container-Neustarts erhalten.
+
+- **Eingelöste Gutscheine:** JSON-Text mit den Einlösungen
+- **Benutzersummen:** JSON-Text mit den Summen pro Benutzer
+- **Verbindung testen:** prüft die eingetragene Adresse
+- **Jetzt synchronisieren:** überträgt den aktuellen lokalen Datenstand
+
+Die Werte werden weiterhin über die ioBroker-HTTP-API als JSON-Text mit `type=string` übertragen. Die interne Code-Bezeichnung und das Benutzer-Eingabeprotokoll werden nicht synchronisiert.

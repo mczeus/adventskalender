@@ -19,6 +19,8 @@ DB_PATH = os.environ.get("DB_PATH", "/data/gutscheine.db")
 PORT = int(os.environ.get("PORT", "8080"))
 IOBROKER_URL = os.environ.get("IOBROKER_URL", "").rstrip("/")
 IOBROKER_ENABLED = os.environ.get("IOBROKER_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+DEFAULT_IOBROKER_VOUCHERS = "javascript.0.Adventskalender.gutscheine"
+DEFAULT_IOBROKER_TOTALS = "javascript.0.Adventskalender.betraege"
 ALL_USERS = "__ALL_USERS__"
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "change-this-session-secret")
 if SESSION_SECRET == "change-this-session-secret":
@@ -81,6 +83,68 @@ def valid_internal_label(value):
 def owner_label(value):
     return "Alle Benutzer" if value == ALL_USERS else value
 
+def clean_iobroker_url(value):
+    value = str(value or "").strip().rstrip("/")
+    if len(value) > 300 or any(ord(ch) < 32 for ch in value):
+        return None
+    if value and not (value.startswith("http://") or value.startswith("https://")):
+        return None
+    return value
+
+def clean_datapoint(value, fallback):
+    value = str(value or "").strip()
+    if not value:
+        value = fallback
+    if len(value) > 250 or any(ord(ch) < 32 for ch in value) or "?" in value or "#" in value:
+        return None
+    return value
+
+def default_iobroker_config():
+    return {
+        "enabled": IOBROKER_ENABLED,
+        "url": IOBROKER_URL,
+        "vouchers_datapoint": DEFAULT_IOBROKER_VOUCHERS,
+        "totals_datapoint": DEFAULT_IOBROKER_TOTALS,
+    }
+
+def read_iobroker_config(conn=None):
+    close = conn is None
+    conn = conn or db()
+    try:
+        defaults = default_iobroker_config()
+        rows = conn.execute("SELECT key, value FROM app_meta WHERE key LIKE 'iobroker_%'").fetchall()
+        values = {row["key"]: row["value"] for row in rows}
+        return {
+            "enabled": values.get("iobroker_enabled", "1" if defaults["enabled"] else "0") == "1",
+            "url": values.get("iobroker_url", defaults["url"]),
+            "vouchers_datapoint": values.get("iobroker_vouchers_datapoint", defaults["vouchers_datapoint"]),
+            "totals_datapoint": values.get("iobroker_totals_datapoint", defaults["totals_datapoint"]),
+        }
+    finally:
+        if close:
+            conn.close()
+
+def write_iobroker_config(conn, config):
+    values = {
+        "iobroker_enabled": "1" if config["enabled"] else "0",
+        "iobroker_url": config["url"],
+        "iobroker_vouchers_datapoint": config["vouchers_datapoint"],
+        "iobroker_totals_datapoint": config["totals_datapoint"],
+    }
+    for key, value in values.items():
+        conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)", (key, value))
+
+def validate_iobroker_config(payload, current=None):
+    current = current or default_iobroker_config()
+    enabled = payload.get("enabled", current["enabled"])
+    enabled = enabled in (True, 1, "1", "true", "on", "yes")
+    url = clean_iobroker_url(payload.get("url", current["url"]))
+    vouchers = clean_datapoint(payload.get("vouchers_datapoint", current["vouchers_datapoint"]), DEFAULT_IOBROKER_VOUCHERS)
+    totals_dp = clean_datapoint(payload.get("totals_datapoint", current["totals_datapoint"]), DEFAULT_IOBROKER_TOTALS)
+    if url is None or vouchers is None or totals_dp is None:
+        return None
+    return {"enabled": enabled, "url": url, "vouchers_datapoint": vouchers, "totals_datapoint": totals_dp}
+
 def password_hash(password, salt):
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 240000).hex()
 
@@ -102,6 +166,13 @@ def init_db():
         conn.execute("CREATE TABLE IF NOT EXISTS redemption_events (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL, redeemed_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS user_input_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_name TEXT NOT NULL, entered_code TEXT NOT NULL, result TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        initial_iobroker = default_iobroker_config()
+        write_iobroker_config(conn, {
+            "enabled": initial_iobroker["enabled"],
+            "url": initial_iobroker["url"],
+            "vouchers_datapoint": initial_iobroker["vouchers_datapoint"],
+            "totals_datapoint": initial_iobroker["totals_datapoint"],
+        }) if not conn.execute("SELECT 1 FROM app_meta WHERE key = 'iobroker_enabled'").fetchone() else None
         migrated = conn.execute("SELECT value FROM app_meta WHERE key = 'redeemed_events_migrated'").fetchone()
         if not migrated:
             conn.execute("INSERT INTO redemption_events (code, name, amount, description, redeemed_at) SELECT code, name, amount, description, redeemed_at FROM redeemed")
@@ -116,7 +187,8 @@ def init_db():
             conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('default_codes_seeded', '1')")
         # Keep the built-in test code available after upgrades, even if the database already contains codes.
         code, (name, amount, description) = "FROH", CODES["FROH"]
-        conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 0, ?, ?)", (code, name, amount, description or "", timestamp, timestamp))
+        conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 1, ?, ?)", (code, name, amount, description or "", timestamp, timestamp))
+        conn.execute("UPDATE codes SET reusable = 1 WHERE code = ?", ("FROH",))
         conn.commit()
 
 def make_session(kind, subject):
@@ -215,30 +287,43 @@ def admin_dashboard():
     codes = [dict(row) for row in code_rows]
     for code in codes:
         code["owner_label"] = owner_label(code["name"])
-    return {"users": [row["name"] for row in user_rows], "codes": codes, "redeemed": all_redeemed(), "totals": totals(), "user_inputs": user_input_log()}
+    return {"users": [row["name"] for row in user_rows], "codes": codes, "redeemed": all_redeemed(), "totals": totals(), "user_inputs": user_input_log(), "iobroker": read_iobroker_config()}
 
-def sync_iobroker():
-    if not IOBROKER_ENABLED:
+def sync_iobroker(config=None):
+    config = config or read_iobroker_config()
+    if not config["enabled"]:
         return {"ok": True, "enabled": False, "message": "ioBroker-Synchronisierung ist deaktiviert."}
-    if not IOBROKER_URL:
-        return {"ok": False, "message": "Keine ioBroker-Adresse konfiguriert."}
+    if not config["url"]:
+        return {"ok": False, "enabled": True, "message": "Keine ioBroker-Adresse konfiguriert."}
     values = all_redeemed()
     totals_data = totals()
     # Both payloads are JSON text. type=string prevents ioBroker from treating them as objects.
     requests = [
-        ("javascript.0.Adventskalender.gutscheine", json.dumps(values, ensure_ascii=False, separators=(",", ":"))),
-        ("javascript.0.Adventskalender.betraege", json.dumps(totals_data, ensure_ascii=False, separators=(",", ":")))
+        (config["vouchers_datapoint"], json.dumps(values, ensure_ascii=False, separators=(",", ":"))),
+        (config["totals_datapoint"], json.dumps(totals_data, ensure_ascii=False, separators=(",", ":")))
     ]
     try:
         for datapoint, value in requests:
             query = urllib.parse.urlencode({"value": value, "type": "string"})
-            request = urllib.request.Request(f"{IOBROKER_URL}/set/{datapoint}?{query}", method="GET")
+            request = urllib.request.Request(f"{config['url']}/set/{datapoint}?{query}", method="GET")
             with urllib.request.urlopen(request, timeout=4) as response:
                 if response.status >= 400:
                     raise RuntimeError(f"HTTP {response.status}")
-        return {"ok": True, "message": "Mit ioBroker synchronisiert."}
+        return {"ok": True, "enabled": True, "message": "Mit ioBroker synchronisiert."}
     except Exception as exc:
-        return {"ok": False, "message": "Lokal gespeichert; ioBroker nicht erreichbar.", "detail": str(exc)}
+        return {"ok": False, "enabled": True, "message": "Lokal gespeichert; ioBroker nicht erreichbar.", "detail": str(exc)}
+
+def test_iobroker(config):
+    if not config["url"]:
+        return {"ok": False, "message": "Bitte zuerst eine ioBroker-Adresse eintragen."}
+    try:
+        request = urllib.request.Request(f"{config['url']}/help", method="GET")
+        with urllib.request.urlopen(request, timeout=4) as response:
+            if response.status >= 400:
+                raise RuntimeError(f"HTTP {response.status}")
+        return {"ok": True, "message": "ioBroker-Adresse erreichbar."}
+    except Exception as exc:
+        return {"ok": False, "message": "ioBroker-Adresse nicht erreichbar.", "detail": str(exc)}
 
 def send_user_login(handler, user):
     cookie = f"session={make_session('user', user)}; Max-Age=1209600; Path=/; HttpOnly; SameSite=Lax"
@@ -387,6 +472,23 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/sync":
             if not session_info(self): self.send_json({"error": "Nicht angemeldet."}, 401); return
             self.send_json(sync_iobroker()); return
+        if path == "/api/admin/iobroker/config":
+            if not self.require_admin(): return
+            current = read_iobroker_config()
+            config = validate_iobroker_config(payload, current)
+            if config is None:
+                self.send_json({"error": "ioBroker-Adresse oder Datenpunkt ist ungueltig."}, 400); return
+            with DB_LOCK, db() as conn:
+                write_iobroker_config(conn, config)
+                conn.commit()
+            self.send_json({"ok": True, "config": config, "data": admin_dashboard(), "message": "ioBroker-Einstellungen gespeichert."}); return
+        if path == "/api/admin/iobroker/test":
+            if not self.require_admin(): return
+            current = read_iobroker_config()
+            config = validate_iobroker_config(payload, current)
+            if config is None:
+                self.send_json({"error": "ioBroker-Adresse oder Datenpunkt ist ungueltig."}, 400); return
+            self.send_json(test_iobroker(config)); return
         if path.startswith("/api/admin/code/") and path.endswith("/save"):
             if not self.require_admin(): return
             code = urllib.parse.unquote(path[len("/api/admin/code/"):-len("/save")]).strip("/").upper()
@@ -483,7 +585,8 @@ class Handler(BaseHTTPRequestHandler):
                 conn.execute("DELETE FROM codes WHERE code <> ?", ("FROH",))
                 froh_name, froh_amount, froh_description = CODES["FROH"]
                 timestamp = now()
-                conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, internal_label, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)", ("FROH", froh_name, froh_amount, froh_description, "", timestamp, timestamp))
+                conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, internal_label, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)", ("FROH", froh_name, froh_amount, froh_description, "", timestamp, timestamp))
+                conn.execute("UPDATE codes SET reusable = 1 WHERE code = ?", ("FROH",))
                 conn.commit()
             sync = sync_iobroker()
             self.send_json({"ok": True, "data": admin_dashboard(), "sync": sync}); return
