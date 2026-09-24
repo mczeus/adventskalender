@@ -11,4 +11,7 @@ services:
       # Nach dem ersten Start unbedingt einen eigenen langen Wert setzen.
       SESSION_SECRET: "bitte-durch-einen-langen-zufaelligen-wert-ersetzen"
     volumes:
-      - ./data:/data
+      - gutscheine_data:/data
+
+volumes:
+  gutscheine_data:
