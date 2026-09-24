@@ -64,7 +64,21 @@ def db():
     return connection
 
 def now():
-    return datetime.now(APP_TIMEZONE).isoformat()
+    # Store local application time without a timezone suffix. The API formats it
+    # for people and for ioBroker as DD.MM.YYYY HH:MM:SS.
+    return datetime.now(APP_TIMEZONE).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")
+
+def format_timestamp(value):
+    if not value:
+        return ""
+    text = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(APP_TIMEZONE).replace(tzinfo=None)
+        return parsed.strftime("%d.%m.%Y %H:%M:%S")
+    except ValueError:
+        return text
 
 def valid_username(value):
     value = str(value or "").strip()
@@ -248,12 +262,21 @@ def totals():
 def all_redeemed():
     with db() as conn:
         rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redemption_events ORDER BY redeemed_at DESC, id DESC").fetchall()
-    return [dict(row) for row in rows]
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["redeemed_at"] = format_timestamp(item.get("redeemed_at"))
+        result.append(item)
+    return result
 
 def user_data(user):
     with db() as conn:
         rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redemption_events WHERE lower(name) = lower(?) ORDER BY redeemed_at DESC, id DESC", (user,)).fetchall()
-    entries = [dict(row) for row in rows]
+    entries = []
+    for row in rows:
+        item = dict(row)
+        item["redeemed_at"] = format_timestamp(item.get("redeemed_at"))
+        entries.append(item)
     return {"user": user, "entries": entries, "total": round(sum(float(x["amount"]) for x in entries), 2)}
 
 def clean_entered_code(value):
@@ -278,7 +301,12 @@ def user_input_log():
         rows = conn.execute(
             "SELECT id, user_name, entered_code, result, detail, created_at FROM user_input_log ORDER BY id DESC"
         ).fetchall()
-    return [dict(row) for row in rows]
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["created_at"] = format_timestamp(item.get("created_at"))
+        result.append(item)
+    return result
 
 def admin_dashboard():
     with db() as conn:
@@ -294,6 +322,7 @@ def admin_dashboard():
     codes = [dict(row) for row in code_rows]
     for code in codes:
         code["owner_label"] = owner_label(code["name"])
+        code["redeemed_at"] = format_timestamp(code.get("redeemed_at"))
     return {"users": [row["name"] for row in user_rows], "codes": codes, "redeemed": all_redeemed(), "totals": totals(), "user_inputs": user_input_log(), "iobroker": read_iobroker_config()}
 
 def sync_iobroker(config=None):
