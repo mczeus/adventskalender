@@ -1,4 +1,3 @@
-import base64
 import hashlib
 import hmac
 import json
@@ -12,6 +11,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import threading
 
 ROOT = Path(__file__).resolve().parent
 PUBLIC = ROOT / "public"
@@ -20,7 +20,7 @@ PORT = int(os.environ.get("PORT", "8080"))
 IOBROKER_URL = os.environ.get("IOBROKER_URL", "").rstrip("/")
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "change-this-session-secret")
 if SESSION_SECRET == "change-this-session-secret":
-    print("WARNUNG: SESSION_SECRET ist noch der Standardwert.")
+    print("WARNING: SESSION_SECRET is still the default value.")
 
 CODES = {
     "C5X3": ("Jan", 0.00, "Startcode"),
@@ -44,19 +44,12 @@ CODES = {
 }
 
 SESSIONS = {}
-DB_LOCK = __import__("threading").RLock()
+DB_LOCK = threading.RLock()
 
 def db():
     connection = sqlite3.connect(DB_PATH, timeout=10)
     connection.row_factory = sqlite3.Row
     return connection
-
-def init_db():
-    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-    with db() as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS users (name TEXT PRIMARY KEY, salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
-        conn.execute("CREATE TABLE IF NOT EXISTS redeemed (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL, redeemed_at TEXT NOT NULL)")
-        conn.commit()
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -64,26 +57,46 @@ def now():
 def password_hash(password, salt):
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 240000).hex()
 
-def make_session(user):
+def init_db():
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    with db() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS users (name TEXT PRIMARY KEY, salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS admin (id INTEGER PRIMARY KEY CHECK (id = 1), salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS redeemed (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL, redeemed_at TEXT NOT NULL)")
+        timestamp = now()
+        for code, (name, amount, description) in CODES.items():
+            conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, active, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)", (code, name, amount, description or "", timestamp, timestamp))
+        conn.commit()
+
+def make_session(kind, subject):
     token = secrets.token_urlsafe(32)
     signature = hmac.new(SESSION_SECRET.encode(), token.encode(), hashlib.sha256).hexdigest()
-    SESSIONS[token] = (user, time.time() + 60 * 60 * 24 * 14)
+    SESSIONS[token] = (kind, subject, time.time() + 60 * 60 * 24 * 14)
     return token + "." + signature
 
-def session_user(handler):
+def session_info(handler):
     raw = handler.headers.get("Cookie", "")
-    token = next((part.strip()[8:] for part in raw.split(";") if part.strip().startswith("session=")), "")
-    if "." not in token:
+    signed = next((part.strip()[8:] for part in raw.split(";") if part.strip().startswith("session=")), "")
+    if "." not in signed:
         return None
-    value, signature = token.rsplit(".", 1)
-    expected = hmac.new(SESSION_SECRET.encode(), value.encode(), hashlib.sha256).hexdigest()
+    token, signature = signed.rsplit(".", 1)
+    expected = hmac.new(SESSION_SECRET.encode(), token.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected):
         return None
-    session = SESSIONS.get(value)
-    if not session or session[1] < time.time():
-        SESSIONS.pop(value, None)
+    session = SESSIONS.get(token)
+    if not session or session[2] < time.time():
+        SESSIONS.pop(token, None)
         return None
-    return session[0]
+    return {"kind": session[0], "subject": session[1], "token": token}
+
+def user_session(handler):
+    session = session_info(handler)
+    return session["subject"] if session and session["kind"] == "user" else None
+
+def admin_session(handler):
+    session = session_info(handler)
+    return bool(session and session["kind"] == "admin")
 
 def json_body(handler):
     try:
@@ -102,22 +115,39 @@ def totals():
 
 def all_redeemed():
     with db() as conn:
-        rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redeemed ORDER BY redeemed_at").fetchall()
+        rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redeemed ORDER BY redeemed_at DESC").fetchall()
     return [dict(row) for row in rows]
+
+def user_data(user):
+    with db() as conn:
+        rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redeemed WHERE name = ? ORDER BY redeemed_at DESC", (user,)).fetchall()
+    entries = [dict(row) for row in rows]
+    return {"user": user, "entries": entries, "total": round(sum(float(x["amount"]) for x in entries), 2)}
+
+def admin_dashboard():
+    with db() as conn:
+        code_rows = conn.execute("""
+            SELECT c.code, c.name, c.amount, c.description, c.active,
+                   r.name AS redeemed_by, r.redeemed_at
+            FROM codes c LEFT JOIN redeemed r ON r.code = c.code
+            ORDER BY c.name, c.code
+        """).fetchall()
+    return {"codes": [dict(row) for row in code_rows], "redeemed": all_redeemed(), "totals": totals()}
 
 def sync_iobroker():
     if not IOBROKER_URL:
         return {"ok": False, "message": "Keine ioBroker-Adresse konfiguriert."}
     values = all_redeemed()
     totals_data = totals()
+    # type=string prevents ioBroker from treating the JSON document as an object.
     requests = [
         ("javascript.0.Adventskalender.gutscheine", json.dumps(values, ensure_ascii=False, separators=(",", ":"))),
-        ("javascript.0.Adventskalender.janBetrag", f"{totals_data['Jan']:.2f}€"),
-        ("javascript.0.Adventskalender.kimBetrag", f"{totals_data['Kim']:.2f}€")
+        ("javascript.0.Adventskalender.janBetrag", f"{totals_data['Jan']:.2f} EUR"),
+        ("javascript.0.Adventskalender.kimBetrag", f"{totals_data['Kim']:.2f} EUR")
     ]
     try:
         for datapoint, value in requests:
-            query = urllib.parse.urlencode({"value": value})
+            query = urllib.parse.urlencode({"value": value, "type": "string"})
             request = urllib.request.Request(f"{IOBROKER_URL}/set/{datapoint}?{query}", method="GET")
             with urllib.request.urlopen(request, timeout=4) as response:
                 if response.status >= 400:
@@ -126,14 +156,16 @@ def sync_iobroker():
     except Exception as exc:
         return {"ok": False, "message": "Lokal gespeichert; ioBroker nicht erreichbar.", "detail": str(exc)}
 
-def user_data(user):
-    with db() as conn:
-        rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redeemed WHERE name = ? ORDER BY redeemed_at DESC", (user,)).fetchall()
-    entries = [dict(row) for row in rows]
-    return {"user": user, "entries": entries, "total": round(sum(float(x["amount"]) for x in entries), 2)}
+def send_user_login(handler, user):
+    cookie = f"session={make_session('user', user)}; Max-Age=1209600; Path=/; HttpOnly; SameSite=Lax"
+    handler.send_json({"ok": True, "data": user_data(user)}, cookies=[cookie])
+
+def send_admin_login(handler):
+    cookie = f"session={make_session('admin', 'Admin')}; Max-Age=1209600; Path=/; HttpOnly; SameSite=Lax"
+    handler.send_json({"ok": True, "data": admin_dashboard()}, cookies=[cookie])
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "WeihnachtsGutscheine/1.0"
+    server_version = "WeihnachtsGutscheine/2.0"
     def log_message(self, format, *args):
         print(f"{self.address_string()} - {format % args}")
     def send_json(self, payload, status=200, cookies=None):
@@ -160,15 +192,23 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(data)
+    def require_admin(self):
+        if not admin_session(self):
+            self.send_json({"error": "Admin-Anmeldung erforderlich."}, 401)
+            return False
+        return True
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/config":
             with db() as conn:
-                setup = {name: bool(conn.execute("SELECT 1 FROM users WHERE name = ?", (name,)).fetchone()) for name in ("Jan", "Kim")}
-            self.send_json({"users": setup})
+                users = {name: bool(conn.execute("SELECT 1 FROM users WHERE name = ?", (name,)).fetchone()) for name in ("Jan", "Kim")}
+                admin_configured = bool(conn.execute("SELECT 1 FROM admin WHERE id = 1").fetchone())
+            self.send_json({"users": users, "adminConfigured": admin_configured})
         elif path == "/api/me":
-            user = session_user(self)
+            user = user_session(self)
             self.send_json({"authenticated": bool(user), "data": user_data(user) if user else None})
+        elif path == "/api/admin/dashboard":
+            if self.require_admin(): self.send_json(admin_dashboard())
         elif path == "/" or path == "/index.html":
             self.send_file(PUBLIC / "index.html")
         elif path == "/hintergrund.jpg":
@@ -176,7 +216,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_error(HTTPStatus.NOT_FOUND)
     def do_POST(self):
-        path = urllib.parse.urlparse(self.path).path
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
         payload = json_body(self)
         if path == "/api/setup":
             user, password, confirm = payload.get("user"), payload.get("password", ""), payload.get("confirm", "")
@@ -184,50 +225,117 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Benutzer oder Passwortdaten sind ungueltig."}, 400); return
             with DB_LOCK, db() as conn:
                 if conn.execute("SELECT 1 FROM users WHERE name = ?", (user,)).fetchone():
-                    self.send_json({"error": "Für diesen Benutzer wurde bereits ein Passwort eingerichtet."}, 409); return
+                    self.send_json({"error": "Fuer diesen Benutzer wurde bereits ein Passwort eingerichtet."}, 409); return
                 salt = secrets.token_hex(16)
                 conn.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (user, salt, password_hash(password, salt), now()))
                 conn.commit()
-            self.finish_login(user); return
+            send_user_login(self, user); return
         if path == "/api/login":
             user, password = payload.get("user"), payload.get("password", "")
             with db() as conn:
                 row = conn.execute("SELECT salt, password_hash FROM users WHERE name = ?", (user,)).fetchone()
             if not row or not hmac.compare_digest(password_hash(password, row["salt"]), row["password_hash"]):
                 self.send_json({"error": "Benutzername oder Passwort ist nicht korrekt."}, 401); return
-            self.finish_login(user); return
+            send_user_login(self, user); return
+        if path == "/api/admin/setup":
+            password, confirm = payload.get("password", ""), payload.get("confirm", "")
+            if len(password) < 4 or password != confirm:
+                self.send_json({"error": "Das Admin-Passwort ist ungueltig oder stimmt nicht ueberein."}, 400); return
+            with DB_LOCK, db() as conn:
+                if conn.execute("SELECT 1 FROM admin WHERE id = 1").fetchone():
+                    self.send_json({"error": "Das Admin-Passwort wurde bereits eingerichtet."}, 409); return
+                salt = secrets.token_hex(16)
+                conn.execute("INSERT INTO admin VALUES (1, ?, ?, ?)", (salt, password_hash(password, salt), now()))
+                conn.commit()
+            send_admin_login(self); return
+        if path == "/api/admin/login":
+            password = payload.get("password", "")
+            with db() as conn:
+                row = conn.execute("SELECT salt, password_hash FROM admin WHERE id = 1").fetchone()
+            if not row or not hmac.compare_digest(password_hash(password, row["salt"]), row["password_hash"]):
+                self.send_json({"error": "Admin-Passwort ist nicht korrekt."}, 401); return
+            send_admin_login(self); return
         if path == "/api/logout":
-            raw = self.headers.get("Cookie", "")
-            token = next((part.strip()[8:].split(".", 1)[0] for part in raw.split(";") if part.strip().startswith("session=")), "")
-            SESSIONS.pop(token, None)
+            session = session_info(self)
+            if session: SESSIONS.pop(session["token"], None)
             self.send_json({"ok": True}, cookies=["session=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"]); return
         if path == "/api/redeem":
-            user = session_user(self)
+            user = user_session(self)
             if not user:
                 self.send_json({"error": "Nicht angemeldet."}, 401); return
             code = str(payload.get("code", "")).strip().upper()
-            if len(code) != 4 or not code.isalnum() or code not in CODES:
-                self.send_json({"error": "Dieser Gutscheincode ist ungueltig."}, 400); return
-            owner, amount, description = CODES[code]
-            if owner != user:
-                self.send_json({"error": f"Dieser Code gehoert zu {owner}."}, 403); return
+            if len(code) != 4 or not code.isalnum():
+                self.send_json({"error": "Bitte genau vier Buchstaben oder Zahlen eingeben."}, 400); return
+            with db() as conn:
+                voucher = conn.execute("SELECT code, name, amount, description, active FROM codes WHERE code = ?", (code,)).fetchone()
+            if not voucher or not voucher["active"]:
+                self.send_json({"error": "Dieser Gutscheincode ist ungueltig oder deaktiviert."}, 400); return
+            if voucher["name"] != user:
+                self.send_json({"error": f"Dieser Code gehoert zu {voucher['name']}."}, 403); return
             try:
                 with DB_LOCK, db() as conn:
-                    conn.execute("INSERT INTO redeemed VALUES (?, ?, ?, ?, ?)", (code, owner, amount, description, now()))
+                    conn.execute("INSERT INTO redeemed VALUES (?, ?, ?, ?, ?)", (code, voucher["name"], voucher["amount"], voucher["description"], now()))
                     conn.commit()
             except sqlite3.IntegrityError:
                 self.send_json({"error": "Dieser Code wurde bereits eingeloest."}, 409); return
             sync = sync_iobroker()
-            self.send_json({"ok": True, "entry": {"code": code, "name": owner, "amount": amount, "description": description}, "data": user_data(user), "sync": sync})
-            return
+            self.send_json({"ok": True, "entry": {"code": code, "name": user, "amount": voucher["amount"], "description": voucher["description"]}, "data": user_data(user), "sync": sync}); return
         if path == "/api/sync":
-            if not session_user(self):
-                self.send_json({"error": "Nicht angemeldet."}, 401); return
+            if not session_info(self): self.send_json({"error": "Nicht angemeldet."}, 401); return
             self.send_json(sync_iobroker()); return
+        if path == "/api/admin/code":
+            if not self.require_admin(): return
+            code = str(payload.get("code", "")).strip().upper()
+            name = payload.get("name")
+            description = str(payload.get("description", "")).strip()
+            try: amount = round(float(payload.get("amount", 0)), 2)
+            except (TypeError, ValueError): amount = -1
+            if len(code) != 4 or not code.isalnum() or name not in ("Jan", "Kim") or amount < 0:
+                self.send_json({"error": "Code, Benutzer oder Betrag ist ungueltig."}, 400); return
+            with DB_LOCK, db() as conn:
+                try:
+                    conn.execute("INSERT INTO codes VALUES (?, ?, ?, ?, 1, ?, ?)", (code, name, amount, description, now(), now()))
+                    conn.commit()
+                except sqlite3.IntegrityError:
+                    self.send_json({"error": "Dieser Code existiert bereits."}, 409); return
+            self.send_json({"ok": True, "data": admin_dashboard()}); return
+        if path == "/api/admin/sync":
+            if not self.require_admin(): return
+            self.send_json(sync_iobroker()); return
+        if path.startswith("/api/admin/redeemed/") and path.endswith("/undo"):
+            if not self.require_admin(): return
+            code = urllib.parse.unquote(path[len("/api/admin/redeemed/"):-len("/undo")]).strip("/").upper()
+            with DB_LOCK, db() as conn:
+                conn.execute("DELETE FROM redeemed WHERE code = ?", (code,)); conn.commit()
+            self.send_json({"ok": True, "data": admin_dashboard()}); return
         self.send_error(HTTPStatus.NOT_FOUND)
-    def finish_login(self, user):
-        cookie = f"session={make_session(user)}; Max-Age=1209600; Path=/; HttpOnly; SameSite=Lax"
-        self.send_json({"ok": True, "data": user_data(user)}, cookies=[cookie])
+    def do_PUT(self):
+        path = urllib.parse.urlparse(self.path).path
+        if not path.startswith("/api/admin/code/"):
+            self.send_error(HTTPStatus.NOT_FOUND); return
+        if not self.require_admin(): return
+        code = urllib.parse.unquote(path[len("/api/admin/code/"):]).strip("/").upper()
+        payload = json_body(self)
+        description = str(payload.get("description", "")).strip()
+        try: amount = round(float(payload.get("amount", 0)), 2)
+        except (TypeError, ValueError): amount = -1
+        if amount < 0:
+            self.send_json({"error": "Der Betrag muss 0 oder groesser sein."}, 400); return
+        with DB_LOCK, db() as conn:
+            result = conn.execute("UPDATE codes SET amount = ?, description = ?, updated_at = ? WHERE code = ?", (amount, description, now(), code))
+            if result.rowcount == 0:
+                self.send_json({"error": "Code nicht gefunden."}, 404); return
+            conn.commit()
+        self.send_json({"ok": True, "data": admin_dashboard()})
+    def do_DELETE(self):
+        path = urllib.parse.urlparse(self.path).path
+        if not path.startswith("/api/admin/redeemed/"):
+            self.send_error(HTTPStatus.NOT_FOUND); return
+        if not self.require_admin(): return
+        code = urllib.parse.unquote(path[len("/api/admin/redeemed/"):]).strip("/").upper()
+        with DB_LOCK, db() as conn:
+            conn.execute("DELETE FROM redeemed WHERE code = ?", (code,)); conn.commit()
+        self.send_json({"ok": True, "data": admin_dashboard()})
 
 if __name__ == "__main__":
     init_db()

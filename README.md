@@ -1,39 +1,73 @@
 # Weihnachts-Gutscheine als Docker-Container
 
-## Start
+## Start in Portainer
 
-1. Docker und Docker Compose installieren.
-2. In `docker-compose.yml` den Wert `SESSION_SECRET` durch einen langen zufaelligen Wert ersetzen.
-3. Optional die `IOBROKER_URL` anpassen.
-4. Im Projektordner starten:
+Der Stack verwendet ein benanntes Docker-Volume. Dadurch ist kein lokaler `./data`-Ordner erforderlich und der Bind-Mount-Fehler in Portainer wird vermieden.
+
+1. In `docker-compose.yml` den Wert `SESSION_SECRET` durch einen langen eigenen Zufallswert ersetzen.
+2. `IOBROKER_URL` anpassen, falls ioBroker unter einer anderen Adresse erreichbar ist.
+3. Den Stack in Portainer aus dem Git-Repository deployen oder aktualisieren.
+4. Die Anwendung ist danach unter `http://SERVER-IP:8080` erreichbar.
+
+Alternativ auf dem Docker-Host:
 
 ```bash
 docker compose up -d --build
 ```
 
-Die Anwendung ist danach unter `http://SERVER-IP:8080` erreichbar.
+## Benutzer-Login
 
-## Erste Anmeldung
+- `Jan` und `Kim` legen ihr jeweiliges Passwort beim ersten Login selbst fest.
+- Passwoerter werden serverseitig als PBKDF2-SHA256-Hash in SQLite gespeichert.
+- Gutschein-Codes werden serverseitig geprueft und koennen nur einmal eingeloest werden.
 
-- `Jan` oder `Kim` auswählen.
-- Beim ersten Login ein Passwort vergeben und bestätigen.
-- Das Passwort wird serverseitig als PBKDF2-SHA256-Hash in SQLite gespeichert.
-- Das Passwort kann nicht über die Webseite ausgelesen werden.
+## Admin-Bereich
 
-## Datenhaltung
+1. Auf der Login-Seite auf **Admin** klicken.
+2. Beim ersten Aufruf ein Admin-Passwort festlegen.
+3. Im Admin-Bereich stehen zur Verfuegung:
+   - Uebersicht aller vorhandenen Codes
+   - Uebersicht aller eingeloesten Codes
+   - Summen fuer Jan und Kim
+   - Betrag und Beschreibung vorhandener Codes bearbeiten
+   - neue Codes fuer Jan oder Kim anlegen
+   - Einloesungen rueckgaengig machen
+   - erneute Synchronisierung mit ioBroker
 
-Die Daten liegen in `./data/gutscheine.db`. Das Verzeichnis ist als Docker-Volume eingebunden und bleibt bei Container-Neustarts erhalten.
+Der eigentliche Code und die Zuordnung eines bestehenden Codes werden in dieser Version nicht nachtraeglich geaendert. Neue Codes koennen angelegt werden.
 
 ## ioBroker
 
-Nach jeder erfolgreichen Einlösung werden zentral synchronisiert:
+Der Gutscheinbestand wird als JSON-Text an den Datenpunkt gesendet. Der REST-Aufruf verwendet ausdruecklich `type=string`, damit ioBroker die Liste nicht als Objekt behandelt.
+
+Synchronisierte Datenpunkte:
 
 - `javascript.0.Adventskalender.gutscheine`
 - `javascript.0.Adventskalender.janBetrag`
 - `javascript.0.Adventskalender.kimBetrag`
 
-Falls ioBroker nicht erreichbar ist, bleibt die Einlösung trotzdem sicher in SQLite gespeichert. Die Weboberfläche zeigt den Synchronisationsstatus an.
+Der Gutscheinbestand ist dort ein String und kann in JavaScript mit `JSON.parse(String(state.val))` gelesen werden.
 
-## Zuruecksetzen
+Beispiel fuer einen ioBroker-JavaScript-Adapter:
 
-Wenn die Passwoerter komplett neu eingerichtet werden sollen, Container stoppen und die Datei `data/gutscheine.db` sichern bzw. entfernen. Dadurch werden auch die eingelösten Codes gelöscht.
+```javascript
+const liste = JSON.parse(String(getState('javascript.0.Adventskalender.gutscheine').val || '[]'));
+```
+
+Falls ioBroker nicht erreichbar ist, bleibt die Aenderung sicher in SQLite gespeichert. Die Anwendung zeigt den Synchronisationsstatus an.
+
+## Datenhaltung
+
+Die Daten liegen in einem benannten Docker-Volume:
+
+```text
+gutscheine_data:/data
+```
+
+Die SQLite-Datei liegt im Container unter `/data/gutscheine.db` und bleibt bei Container-Neustarts erhalten.
+
+## Wichtiger Hinweis beim Update
+
+Beim normalen Redeploy das Volume `gutscheine_data` nicht loeschen. Darin befinden sich Passwoerter, eingelöste Codes und Admin-Einstellungen.
+
+Wenn die Passwoerter komplett neu eingerichtet werden sollen, muss das Volume bewusst geloescht werden. Dadurch werden auch eingelöste Codes und Gutschein-Aenderungen geloescht.

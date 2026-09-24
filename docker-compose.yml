@@ -8,7 +8,7 @@ services:
     environment:
       PORT: "8080"
       IOBROKER_URL: "http://192.168.1.8:8087"
-      # Nach dem ersten Start unbedingt einen eigenen langen Wert setzen.
+      # Diesen Wert durch einen langen eigenen Zufallswert ersetzen.
       SESSION_SECRET: "bitte-durch-einen-langen-zufaelligen-wert-ersetzen"
     volumes:
       - gutscheine_data:/data
