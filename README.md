@@ -18,7 +18,6 @@ docker compose up -d --build
 ## Benutzer-Login
 
 - Beim ersten Login wird ein frei waehlbarer Benutzername eingegeben und ein Passwort selbst festgelegt.
-- `Jan` und `Kim` sind nicht mehr als Benutzer vorgegeben. Bereits vorhandene alte Gutscheine können weiterhin diese Besitzerbezeichnungen enthalten und im Admin-Bereich angepasst werden.
 - Passwoerter werden serverseitig als PBKDF2-SHA256-Hash in SQLite gespeichert.
 - Gutschein-Codes werden serverseitig geprueft und koennen nur einmal eingeloest werden.
 
