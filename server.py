@@ -26,6 +26,7 @@ if SESSION_SECRET == "change-this-session-secret":
 
 CODES = {
     "C5X3": ("Jan", 0.00, "Startcode"),
+    "FROH": ("__ALL_USERS__", 0.00, "HO HO HO der Testcode scheint zu funktionieren :)"),
     "B1X5": ("Jan", 0.80, ""), "B1K8": ("Jan", 1.00, "Kalender"), "B9V1": ("Jan", 1.30, "Mama knuddeln"),
     "B7C4": ("Jan", 1.40, "Kalender und Mama eine Gschmiert"), "B4E2": ("Jan", 1.20, "Kim eine Gschmiert"),
     "B2Y6": ("Jan", 1.00, "Kalender und Getränke"), "B6G6": ("Jan", 1.30, ""), "B2Q9": ("Jan", 1.20, "Papa eine Gschmiert"),
@@ -95,13 +96,16 @@ def init_db():
             conn.execute("INSERT INTO redemption_events (code, name, amount, description, redeemed_at) SELECT code, name, amount, description, redeemed_at FROM redeemed")
             conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('redeemed_events_migrated', '1')")
         seeded = conn.execute("SELECT value FROM app_meta WHERE key = 'default_codes_seeded'").fetchone()
+        timestamp = now()
+        existing_codes = conn.execute("SELECT COUNT(*) AS count FROM codes").fetchone()["count"]
         if not seeded:
-            timestamp = now()
-            existing_codes = conn.execute("SELECT COUNT(*) AS count FROM codes").fetchone()["count"]
             if existing_codes == 0:
                 for code, (name, amount, description) in CODES.items():
                     conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 0, ?, ?)", (code, name, amount, description or "", timestamp, timestamp))
             conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('default_codes_seeded', '1')")
+        # Keep the built-in test code available after upgrades, even if the database already contains codes.
+        code, (name, amount, description) = "FROH", CODES["FROH"]
+        conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 0, ?, ?)", (code, name, amount, description or "", timestamp, timestamp))
         conn.commit()
 
 def make_session(kind, subject):
