@@ -31,7 +31,8 @@ docker compose up -d --build
    - Uebersicht aller vorhandenen Codes
    - Uebersicht aller eingeloesten Codes
    - Summen pro Benutzer
-   - Besitzername, Betrag und Beschreibung vorhandener Codes bearbeiten
+   - Besitzername eines Codes wird bei Auswahl sofort gespeichert
+   - Betrag und Beschreibung vorhandener Codes bearbeiten
    - neue Codes mit einem angelegten Benutzernamen anlegen
    - Codes für **Alle Benutzer** anlegen; jeder solcher Code kann insgesamt nur einmal eingelöst werden
    - einzelne Codes vollständig löschen

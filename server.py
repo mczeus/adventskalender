@@ -322,6 +322,19 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/sync":
             if not session_info(self): self.send_json({"error": "Nicht angemeldet."}, 401); return
             self.send_json(sync_iobroker()); return
+        if path.startswith("/api/admin/code/") and path.endswith("/owner"):
+            if not self.require_admin(): return
+            code = urllib.parse.unquote(path[len("/api/admin/code/"):-len("/owner")]).strip("/").upper()
+            name = valid_owner(payload.get("name"))
+            if not name:
+                self.send_json({"error": "Benutzername ist ungueltig."}, 400); return
+            with DB_LOCK, db() as conn:
+                result = conn.execute("UPDATE codes SET name = ?, updated_at = ? WHERE code = ?", (name, now(), code))
+                if result.rowcount == 0:
+                    self.send_json({"error": "Code nicht gefunden."}, 404); return
+                conn.commit()
+            sync = sync_iobroker()
+            self.send_json({"ok": True, "code": code, "name": name, "data": admin_dashboard(), "sync": sync}); return
         if path == "/api/admin/code":
             if not self.require_admin(): return
             code = str(payload.get("code", "")).strip().upper()
