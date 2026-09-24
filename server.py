@@ -19,6 +19,7 @@ DB_PATH = os.environ.get("DB_PATH", "/data/gutscheine.db")
 PORT = int(os.environ.get("PORT", "8080"))
 IOBROKER_URL = os.environ.get("IOBROKER_URL", "").rstrip("/")
 IOBROKER_ENABLED = os.environ.get("IOBROKER_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+ALL_USERS = "__ALL_USERS__"
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "change-this-session-secret")
 if SESSION_SECRET == "change-this-session-secret":
     print("WARNING: SESSION_SECRET is still the default value.")
@@ -64,6 +65,15 @@ def valid_username(value):
 def username_key(value):
     return valid_username(value).casefold() if valid_username(value) else ""
 
+def valid_owner(value):
+    value = str(value or "").strip()
+    if value == ALL_USERS or value.casefold() in ("alle benutzer", "alle user", "all users"):
+        return ALL_USERS
+    return valid_username(value)
+
+def owner_label(value):
+    return "Alle Benutzer" if value == ALL_USERS else value
+
 def password_hash(password, salt):
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 240000).hex()
 
@@ -74,9 +84,15 @@ def init_db():
         conn.execute("CREATE TABLE IF NOT EXISTS admin (id INTEGER PRIMARY KEY CHECK (id = 1), salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS redeemed (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL, redeemed_at TEXT NOT NULL)")
-        timestamp = now()
-        for code, (name, amount, description) in CODES.items():
-            conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, active, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)", (code, name, amount, description or "", timestamp, timestamp))
+        conn.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        seeded = conn.execute("SELECT value FROM app_meta WHERE key = 'default_codes_seeded'").fetchone()
+        if not seeded:
+            timestamp = now()
+            existing_codes = conn.execute("SELECT COUNT(*) AS count FROM codes").fetchone()["count"]
+            if existing_codes == 0:
+                for code, (name, amount, description) in CODES.items():
+                    conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, active, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)", (code, name, amount, description or "", timestamp, timestamp))
+            conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('default_codes_seeded', '1')")
         conn.commit()
 
 def make_session(kind, subject):
@@ -145,7 +161,12 @@ def admin_dashboard():
             FROM codes c LEFT JOIN redeemed r ON r.code = c.code
             ORDER BY c.name, c.code
         """).fetchall()
-    return {"codes": [dict(row) for row in code_rows], "redeemed": all_redeemed(), "totals": totals()}
+    with db() as conn:
+        user_rows = conn.execute("SELECT name FROM users ORDER BY name COLLATE NOCASE").fetchall()
+    codes = [dict(row) for row in code_rows]
+    for code in codes:
+        code["owner_label"] = owner_label(code["name"])
+    return {"users": [row["name"] for row in user_rows], "codes": codes, "redeemed": all_redeemed(), "totals": totals()}
 
 def sync_iobroker():
     if not IOBROKER_ENABLED:
@@ -288,11 +309,11 @@ class Handler(BaseHTTPRequestHandler):
                 voucher = conn.execute("SELECT code, name, amount, description, active FROM codes WHERE code = ?", (code,)).fetchone()
             if not voucher or not voucher["active"]:
                 self.send_json({"error": "Dieser Gutscheincode ist ungueltig oder deaktiviert."}, 400); return
-            if username_key(voucher["name"]) != username_key(user):
-                self.send_json({"error": f"Dieser Code gehoert zu {voucher['name']}."}, 403); return
+            if voucher["name"] != ALL_USERS and username_key(voucher["name"]) != username_key(user):
+                self.send_json({"error": f"Dieser Code gehoert zu {owner_label(voucher['name'])}."}, 403); return
             try:
                 with DB_LOCK, db() as conn:
-                    conn.execute("INSERT INTO redeemed VALUES (?, ?, ?, ?, ?)", (code, voucher["name"], voucher["amount"], voucher["description"], now()))
+                    conn.execute("INSERT INTO redeemed VALUES (?, ?, ?, ?, ?)", (code, user, voucher["amount"], voucher["description"], now()))
                     conn.commit()
             except sqlite3.IntegrityError:
                 self.send_json({"error": "Dieser Code wurde bereits eingeloest."}, 409); return
@@ -308,7 +329,7 @@ class Handler(BaseHTTPRequestHandler):
             description = str(payload.get("description", "")).strip()
             try: amount = round(float(payload.get("amount", 0)), 2)
             except (TypeError, ValueError): amount = -1
-            name = valid_username(name)
+            name = valid_owner(name)
             if len(code) != 4 or not code.isalnum() or not name or amount < 0:
                 self.send_json({"error": "Code, Benutzername oder Betrag ist ungueltig."}, 400); return
             with DB_LOCK, db() as conn:
@@ -335,7 +356,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.require_admin(): return
         code = urllib.parse.unquote(path[len("/api/admin/code/"):]).strip("/").upper()
         payload = json_body(self)
-        name = valid_username(payload.get("name"))
+        name = valid_owner(payload.get("name"))
         description = str(payload.get("description", "")).strip()
         try: amount = round(float(payload.get("amount", 0)), 2)
         except (TypeError, ValueError): amount = -1
@@ -351,13 +372,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"ok": True, "data": admin_dashboard()})
     def do_DELETE(self):
         path = urllib.parse.urlparse(self.path).path
-        if not path.startswith("/api/admin/redeemed/"):
-            self.send_error(HTTPStatus.NOT_FOUND); return
         if not self.require_admin(): return
-        code = urllib.parse.unquote(path[len("/api/admin/redeemed/"):]).strip("/").upper()
-        with DB_LOCK, db() as conn:
-            conn.execute("DELETE FROM redeemed WHERE code = ?", (code,)); conn.commit()
-        self.send_json({"ok": True, "data": admin_dashboard()})
+        if path == "/api/admin/codes/all":
+            with DB_LOCK, db() as conn:
+                conn.execute("DELETE FROM redeemed")
+                conn.execute("DELETE FROM codes")
+                conn.commit()
+            sync = sync_iobroker()
+            self.send_json({"ok": True, "data": admin_dashboard(), "sync": sync}); return
+        if path.startswith("/api/admin/code/"):
+            code = urllib.parse.unquote(path[len("/api/admin/code/"):]).strip("/").upper()
+            with DB_LOCK, db() as conn:
+                result = conn.execute("DELETE FROM codes WHERE code = ?", (code,))
+                conn.execute("DELETE FROM redeemed WHERE code = ?", (code,))
+                conn.commit()
+            if result.rowcount == 0:
+                self.send_json({"error": "Code nicht gefunden."}, 404); return
+            sync = sync_iobroker()
+            self.send_json({"ok": True, "data": admin_dashboard(), "sync": sync}); return
+        if path.startswith("/api/admin/redeemed/"):
+            code = urllib.parse.unquote(path[len("/api/admin/redeemed/"):]).strip("/").upper()
+            with DB_LOCK, db() as conn:
+                conn.execute("DELETE FROM redeemed WHERE code = ?", (code,)); conn.commit()
+            sync = sync_iobroker()
+            self.send_json({"ok": True, "data": admin_dashboard(), "sync": sync}); return
+        self.send_error(HTTPStatus.NOT_FOUND)
 
 if __name__ == "__main__":
     init_db()

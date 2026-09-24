@@ -32,11 +32,14 @@ docker compose up -d --build
    - Uebersicht aller eingeloesten Codes
    - Summen pro Benutzer
    - Besitzername, Betrag und Beschreibung vorhandener Codes bearbeiten
-   - neue Codes mit frei wählbarem Benutzernamen anlegen
+   - neue Codes mit einem angelegten Benutzernamen anlegen
+   - Codes für **Alle Benutzer** anlegen; jeder solcher Code kann insgesamt nur einmal eingelöst werden
+   - einzelne Codes vollständig löschen
+   - alle Codes und die Einlösungshistorie vollständig löschen
    - Einloesungen rueckgaengig machen
    - erneute Synchronisierung mit ioBroker
 
-Der eigentliche Code bleibt unverändert; Besitzername, Betrag und Beschreibung können geändert werden. Neue Codes können mit einem frei wählbaren Besitzernamen angelegt werden.
+Der eigentliche Code bleibt unverändert; Besitzername, Betrag und Beschreibung können geändert werden. Einzelne Codes können vollständig gelöscht werden; dabei wird auch eine zugehörige Einlösung gelöscht. Zusätzlich gibt es eine Sicherheitsabfrage zum Löschen aller Codes und der gesamten Einlösungshistorie. Für den Besitzer kann ein angelegter Benutzer oder **Alle Benutzer** gewählt werden. Ein Code für **Alle Benutzer** ist nur einmal insgesamt gültig.
 
 ## ioBroker
 
@@ -87,6 +90,6 @@ Die SQLite-Datei liegt im Container unter `/data/gutscheine.db` und bleibt bei C
 
 ## Wichtiger Hinweis beim Update
 
-Beim normalen Redeploy das Volume `gutscheine_data` nicht loeschen. Darin befinden sich Passwoerter, eingelöste Codes und Admin-Einstellungen.
+Beim normalen Redeploy das Volume `gutscheine_data` nicht loeschen. Das Löschen aller Codes im Admin-Bereich leert dagegen bewusst die gespeicherten Gutschein- und Einlösungsdaten. Darin befinden sich Passwoerter, eingelöste Codes und Admin-Einstellungen.
 
 Wenn die Passwoerter komplett neu eingerichtet werden sollen, muss das Volume bewusst geloescht werden. Dadurch werden auch eingelöste Codes und Gutschein-Aenderungen geloescht.
