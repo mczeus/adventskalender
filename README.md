@@ -5,9 +5,10 @@
 Der Stack verwendet ein benanntes Docker-Volume. Dadurch ist kein lokaler `./data`-Ordner erforderlich und der Bind-Mount-Fehler in Portainer wird vermieden.
 
 1. In `docker-compose.yml` den Wert `SESSION_SECRET` durch einen langen eigenen Zufallswert ersetzen.
-2. `IOBROKER_URL` anpassen, falls ioBroker unter einer anderen Adresse erreichbar ist.
-3. Den Stack in Portainer aus dem Git-Repository deployen oder aktualisieren.
-4. Die Anwendung ist danach unter `http://SERVER-IP:8080` erreichbar.
+2. Den Stack in Portainer aus dem Git-Repository deployen oder aktualisieren.
+3. Die Anwendung ist danach unter `http://SERVER-IP:8080` erreichbar.
+
+ioBroker muss nicht in Docker oder in `docker-compose.yml` eingetragen werden. Die Verbindung wird nach der Anmeldung direkt im Admin-Bereich eingerichtet.
 
 Alternativ auf dem Docker-Host:
 
@@ -19,6 +20,7 @@ docker compose up -d --build
 
 - Beim ersten Login wird ein frei waehlbarer Benutzername eingegeben und ein Passwort selbst festgelegt.
 - Benutzernamen werden ohne Beachtung der Gross-/Kleinschreibung erkannt: `Alex`, `alex` und `ALEX` sind derselbe Benutzer.
+- `Jan` und `Kim` sind nicht mehr als Benutzer vorgegeben. Bereits vorhandene alte Gutscheine können weiterhin diese Besitzerbezeichnungen enthalten und im Admin-Bereich angepasst werden.
 - Passwoerter werden serverseitig als PBKDF2-SHA256-Hash in SQLite gespeichert.
 - Gutschein-Codes werden serverseitig geprueft und koennen nur einmal eingeloest werden.
 
@@ -45,15 +47,11 @@ Der eigentliche Code bleibt unverändert; Besitzername, Betrag, Beschreibung und
 
 ## ioBroker
 
-Die Kommunikation ist optional. In `docker-compose.yml` steuert diese Variable den Betrieb:
+Die ioBroker-Synchronisierung ist optional und wird vollständig im Admin-Bereich konfiguriert. In Docker oder in `docker-compose.yml` müssen keine ioBroker-Variablen eingetragen werden.
 
-```yaml
-IOBROKER_ENABLED: "false"
-```
+Nach der Admin-Anmeldung kann die Synchronisierung unter **ioBroker-Verbindung** aktiviert oder deaktiviert werden. Dort werden die ioBroker-Adresse und die Ziel-Datenpunkte eingetragen und dauerhaft in SQLite gespeichert.
 
-Für die Aktivierung auf `"true"` setzen und `IOBROKER_URL` prüfen. Wenn sie deaktiviert ist, bleiben alle Daten vollständig lokal in SQLite; es werden keine ioBroker-Aufrufe ausgeführt.
-
-Der Gutscheinbestand wird als JSON-Text an den Datenpunkt gesendet. Der REST-Aufruf verwendet ausdruecklich `type=string`, damit ioBroker die Liste nicht als Objekt behandelt.
+Wenn die Synchronisierung deaktiviert bleibt oder ioBroker nicht erreichbar ist, werden die Gutscheine weiterhin sicher lokal in SQLite gespeichert. Der Gutscheinbestand wird als JSON-Text an den Datenpunkt gesendet. Der REST-Aufruf verwendet ausdrücklich `type=string`, damit ioBroker die Liste nicht als Objekt behandelt.
 
 Synchronisierte Datenpunkte:
 
@@ -116,9 +114,9 @@ Im Admin-Bereich gibt es einen separaten, dauerhaft gespeicherten Bereich **Benu
 `GAME` ist ebenfalls dauerhaft vorhanden, kostet 0,00 EUR und kann mehrfach eingelöst werden. Die öffentliche Beschreibung lautet exakt **„Hast du mal das rote Geschenk gecheckt?“**. Der Code kann weder einzeln noch über **„Alle Codes löschen“** entfernt werden. Im Admin-Bereich werden `FROH` und `GAME` als geschützte Codes angezeigt.
 
 
-## IoBroker-Konfiguration im Admin-Bereich
+## ioBroker-Konfiguration im Admin-Bereich
 
-Die ioBroker-Synchronisierung kann nach der Anmeldung direkt im Admin-Bereich aktiviert oder deaktiviert werden. Dort lassen sich auch die ioBroker-Adresse sowie die beiden Ziel-Datenpunkte ändern. Die Einstellungen werden dauerhaft in SQLite gespeichert und bleiben bei Container-Neustarts erhalten.
+Die ioBroker-Synchronisierung wird ausschließlich nach der Anmeldung direkt im Admin-Bereich eingerichtet. Eine Konfiguration in Docker oder in `docker-compose.yml` ist nicht erforderlich. Dort lassen sich die Synchronisierung aktivieren oder deaktivieren sowie die ioBroker-Adresse und die beiden Ziel-Datenpunkte ändern. Die Einstellungen werden dauerhaft in SQLite gespeichert und bleiben bei Container-Neustarts erhalten.
 
 - **Eingelöste Gutscheine:** JSON-Text mit den Einlösungen
 - **Benutzersummen:** JSON-Text mit den Summen pro Benutzer
