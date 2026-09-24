@@ -61,6 +61,9 @@ def valid_username(value):
         return None
     return value
 
+def username_key(value):
+    return valid_username(value).casefold() if valid_username(value) else ""
+
 def password_hash(password, salt):
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 240000).hex()
 
@@ -114,8 +117,14 @@ def json_body(handler):
 
 def totals():
     with db() as conn:
-        rows = conn.execute("SELECT name, COALESCE(SUM(amount), 0) AS total FROM redeemed GROUP BY name ORDER BY name").fetchall()
-    return {row["name"]: round(float(row["total"]), 2) for row in rows}
+        rows = conn.execute("SELECT name, amount FROM redeemed ORDER BY name").fetchall()
+    result = {}
+    display_names = {}
+    for row in rows:
+        key = username_key(row["name"])
+        display_names.setdefault(key, row["name"])
+        result[key] = result.get(key, 0.0) + float(row["amount"])
+    return {display_names[key]: round(value, 2) for key, value in sorted(result.items(), key=lambda item: display_names[item[0]].casefold())}
 
 def all_redeemed():
     with db() as conn:
@@ -124,7 +133,7 @@ def all_redeemed():
 
 def user_data(user):
     with db() as conn:
-        rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redeemed WHERE name = ? ORDER BY redeemed_at DESC", (user,)).fetchall()
+        rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redeemed WHERE lower(name) = lower(?) ORDER BY redeemed_at DESC", (user,)).fetchall()
     entries = [dict(row) for row in rows]
     return {"user": user, "entries": entries, "total": round(sum(float(x["amount"]) for x in entries), 2)}
 
@@ -209,7 +218,7 @@ class Handler(BaseHTTPRequestHandler):
             requested_user = valid_username(query.get("user", [""])[0])
             with db() as conn:
                 admin_configured = bool(conn.execute("SELECT 1 FROM admin WHERE id = 1").fetchone())
-                user_configured = bool(requested_user and conn.execute("SELECT 1 FROM users WHERE name = ?", (requested_user,)).fetchone())
+                user_configured = bool(requested_user and conn.execute("SELECT 1 FROM users WHERE lower(name) = lower(?)", (requested_user,)).fetchone())
             self.send_json({"userConfigured": user_configured, "adminConfigured": admin_configured})
         elif path == "/api/me":
             user = user_session(self)
@@ -231,7 +240,7 @@ class Handler(BaseHTTPRequestHandler):
             if not user or len(password) < 4 or password != confirm:
                 self.send_json({"error": "Benutzer oder Passwortdaten sind ungueltig."}, 400); return
             with DB_LOCK, db() as conn:
-                if conn.execute("SELECT 1 FROM users WHERE name = ?", (user,)).fetchone():
+                if conn.execute("SELECT 1 FROM users WHERE lower(name) = lower(?)", (user,)).fetchone():
                     self.send_json({"error": "Fuer diesen Benutzer wurde bereits ein Passwort eingerichtet."}, 409); return
                 salt = secrets.token_hex(16)
                 conn.execute("INSERT INTO users VALUES (?, ?, ?, ?)", (user, salt, password_hash(password, salt), now()))
@@ -240,12 +249,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/login":
             user, password = valid_username(payload.get("user")), payload.get("password", "")
             with db() as conn:
-                row = conn.execute("SELECT salt, password_hash FROM users WHERE name = ?", (user,)).fetchone() if user else None
+                row = conn.execute("SELECT name, salt, password_hash FROM users WHERE lower(name) = lower(?)", (user,)).fetchone() if user else None
             if not row:
                 self.send_json({"error": "Benutzer nicht gefunden. Lege zuerst ein Passwort fest.", "setupRequired": True}, 404); return
             if not hmac.compare_digest(password_hash(password, row["salt"]), row["password_hash"]):
                 self.send_json({"error": "Benutzername oder Passwort ist nicht korrekt."}, 401); return
-            send_user_login(self, user); return
+            send_user_login(self, row["name"]); return
         if path == "/api/admin/setup":
             password, confirm = payload.get("password", ""), payload.get("confirm", "")
             if len(password) < 4 or password != confirm:
@@ -279,7 +288,7 @@ class Handler(BaseHTTPRequestHandler):
                 voucher = conn.execute("SELECT code, name, amount, description, active FROM codes WHERE code = ?", (code,)).fetchone()
             if not voucher or not voucher["active"]:
                 self.send_json({"error": "Dieser Gutscheincode ist ungueltig oder deaktiviert."}, 400); return
-            if voucher["name"] != user:
+            if username_key(voucher["name"]) != username_key(user):
                 self.send_json({"error": f"Dieser Code gehoert zu {voucher['name']}."}, 403); return
             try:
                 with DB_LOCK, db() as conn:
