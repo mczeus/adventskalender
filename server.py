@@ -36,7 +36,7 @@ if SESSION_SECRET == "change-this-session-secret":
 CODES = {
     "C5X3": ("Jan", 0.00, "Startcode"),
     "FROH": ("__ALL_USERS__", 0.00, "HO HO HO der Testcode scheint zu funktionieren :)"),
-    "GAME": ("__ALL_USERS__", 0.00, "Hast du mal das rote Geschenk gecheckt?"),
+    "GAME": ("__ALL_USERS__", 0.00, "Hast du mal das rote Geschenk im Adminbereich gecheckt?"),
     "B1X5": ("Jan", 0.80, ""), "B1K8": ("Jan", 1.00, "Kalender"), "B9V1": ("Jan", 1.30, "Mama knuddeln"),
     "B7C4": ("Jan", 1.40, "Kalender und Mama eine Gschmiert"), "B4E2": ("Jan", 1.20, "Kim eine Gschmiert"),
     "B2Y6": ("Jan", 1.00, "Kalender und Getränke"), "B6G6": ("Jan", 1.30, ""), "B2Q9": ("Jan", 1.20, "Papa eine Gschmiert"),
