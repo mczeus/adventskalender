@@ -82,16 +82,25 @@ def init_db():
     with db() as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS users (name TEXT PRIMARY KEY, salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS admin (id INTEGER PRIMARY KEY CHECK (id = 1), salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
-        conn.execute("CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, reusable INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        try:
+            conn.execute("ALTER TABLE codes ADD COLUMN reusable INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         conn.execute("CREATE TABLE IF NOT EXISTS redeemed (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL, redeemed_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS redemption_events (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL, redeemed_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        migrated = conn.execute("SELECT value FROM app_meta WHERE key = 'redeemed_events_migrated'").fetchone()
+        if not migrated:
+            conn.execute("INSERT INTO redemption_events (code, name, amount, description, redeemed_at) SELECT code, name, amount, description, redeemed_at FROM redeemed")
+            conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('redeemed_events_migrated', '1')")
         seeded = conn.execute("SELECT value FROM app_meta WHERE key = 'default_codes_seeded'").fetchone()
         if not seeded:
             timestamp = now()
             existing_codes = conn.execute("SELECT COUNT(*) AS count FROM codes").fetchone()["count"]
             if existing_codes == 0:
                 for code, (name, amount, description) in CODES.items():
-                    conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, active, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)", (code, name, amount, description or "", timestamp, timestamp))
+                    conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 0, ?, ?)", (code, name, amount, description or "", timestamp, timestamp))
             conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('default_codes_seeded', '1')")
         conn.commit()
 
@@ -133,7 +142,7 @@ def json_body(handler):
 
 def totals():
     with db() as conn:
-        rows = conn.execute("SELECT name, amount FROM redeemed ORDER BY name").fetchall()
+        rows = conn.execute("SELECT name, amount FROM redemption_events ORDER BY name").fetchall()
     result = {}
     display_names = {}
     for row in rows:
@@ -144,21 +153,22 @@ def totals():
 
 def all_redeemed():
     with db() as conn:
-        rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redeemed ORDER BY redeemed_at DESC").fetchall()
+        rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redemption_events ORDER BY redeemed_at DESC, id DESC").fetchall()
     return [dict(row) for row in rows]
 
 def user_data(user):
     with db() as conn:
-        rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redeemed WHERE lower(name) = lower(?) ORDER BY redeemed_at DESC", (user,)).fetchall()
+        rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redemption_events WHERE lower(name) = lower(?) ORDER BY redeemed_at DESC, id DESC", (user,)).fetchall()
     entries = [dict(row) for row in rows]
     return {"user": user, "entries": entries, "total": round(sum(float(x["amount"]) for x in entries), 2)}
 
 def admin_dashboard():
     with db() as conn:
         code_rows = conn.execute("""
-            SELECT c.code, c.name, c.amount, c.description, c.active,
-                   r.name AS redeemed_by, r.redeemed_at
-            FROM codes c LEFT JOIN redeemed r ON r.code = c.code
+            SELECT c.code, c.name, c.amount, c.description, c.active, c.reusable,
+                   (SELECT e.name FROM redemption_events e WHERE e.code = c.code ORDER BY e.id DESC LIMIT 1) AS redeemed_by,
+                   (SELECT e.redeemed_at FROM redemption_events e WHERE e.code = c.code ORDER BY e.id DESC LIMIT 1) AS redeemed_at
+            FROM codes c
             ORDER BY c.name, c.code
         """).fetchall()
     with db() as conn:
@@ -306,14 +316,18 @@ class Handler(BaseHTTPRequestHandler):
             if len(code) != 4 or not code.isalnum():
                 self.send_json({"error": "Bitte genau vier Buchstaben oder Zahlen eingeben."}, 400); return
             with db() as conn:
-                voucher = conn.execute("SELECT code, name, amount, description, active FROM codes WHERE code = ?", (code,)).fetchone()
+                voucher = conn.execute("SELECT code, name, amount, description, active, reusable FROM codes WHERE code = ?", (code,)).fetchone()
             if not voucher or not voucher["active"]:
                 self.send_json({"error": "Dieser Gutscheincode ist ungueltig oder deaktiviert."}, 400); return
             if voucher["name"] != ALL_USERS and username_key(voucher["name"]) != username_key(user):
                 self.send_json({"error": f"Dieser Code gehoert zu {owner_label(voucher['name'])}."}, 403); return
             try:
                 with DB_LOCK, db() as conn:
-                    conn.execute("INSERT INTO redeemed VALUES (?, ?, ?, ?, ?)", (code, user, voucher["amount"], voucher["description"], now()))
+                    if not voucher["reusable"]:
+                        if conn.execute("SELECT 1 FROM redemption_events WHERE code = ? LIMIT 1", (code,)).fetchone():
+                            raise sqlite3.IntegrityError("one-time code already used")
+                        conn.execute("INSERT INTO redeemed VALUES (?, ?, ?, ?, ?)", (code, user, voucher["amount"], voucher["description"], now()))
+                    conn.execute("INSERT INTO redemption_events (code, name, amount, description, redeemed_at) VALUES (?, ?, ?, ?, ?)", (code, user, voucher["amount"], voucher["description"], now()))
                     conn.commit()
             except sqlite3.IntegrityError:
                 self.send_json({"error": "Dieser Code wurde bereits eingeloest."}, 409); return
@@ -340,6 +354,7 @@ class Handler(BaseHTTPRequestHandler):
             code = str(payload.get("code", "")).strip().upper()
             name = payload.get("name")
             description = str(payload.get("description", "")).strip()
+            reusable = 1 if payload.get("reusable") in (True, 1, "1", "true", "on", "yes") else 0
             try: amount = round(float(payload.get("amount", 0)), 2)
             except (TypeError, ValueError): amount = -1
             name = valid_owner(name)
@@ -347,7 +362,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Code, Benutzername oder Betrag ist ungueltig."}, 400); return
             with DB_LOCK, db() as conn:
                 try:
-                    conn.execute("INSERT INTO codes VALUES (?, ?, ?, ?, 1, ?, ?)", (code, name, amount, description, now(), now()))
+                    conn.execute("INSERT INTO codes (code, name, amount, description, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?)", (code, name, amount, description, reusable, now(), now()))
                     conn.commit()
                 except sqlite3.IntegrityError:
                     self.send_json({"error": "Dieser Code existiert bereits."}, 409); return
@@ -359,7 +374,8 @@ class Handler(BaseHTTPRequestHandler):
             if not self.require_admin(): return
             code = urllib.parse.unquote(path[len("/api/admin/redeemed/"):-len("/undo")]).strip("/").upper()
             with DB_LOCK, db() as conn:
-                conn.execute("DELETE FROM redeemed WHERE code = ?", (code,)); conn.commit()
+                conn.execute("DELETE FROM redeemed WHERE code = ?", (code,))
+                conn.execute("DELETE FROM redemption_events WHERE code = ?", (code,)); conn.commit()
             self.send_json({"ok": True, "data": admin_dashboard()}); return
         self.send_error(HTTPStatus.NOT_FOUND)
     def do_PUT(self):
@@ -371,6 +387,7 @@ class Handler(BaseHTTPRequestHandler):
         payload = json_body(self)
         name = valid_owner(payload.get("name"))
         description = str(payload.get("description", "")).strip()
+        reusable = 1 if payload.get("reusable") in (True, 1, "1", "true", "on", "yes") else 0
         try: amount = round(float(payload.get("amount", 0)), 2)
         except (TypeError, ValueError): amount = -1
         if amount < 0:
@@ -378,7 +395,7 @@ class Handler(BaseHTTPRequestHandler):
         if not name:
             self.send_json({"error": "Benutzername ist ungueltig."}, 400); return
         with DB_LOCK, db() as conn:
-            result = conn.execute("UPDATE codes SET name = ?, amount = ?, description = ?, updated_at = ? WHERE code = ?", (name, amount, description, now(), code))
+            result = conn.execute("UPDATE codes SET name = ?, amount = ?, description = ?, reusable = ?, updated_at = ? WHERE code = ?", (name, amount, description, reusable, now(), code))
             if result.rowcount == 0:
                 self.send_json({"error": "Code nicht gefunden."}, 404); return
             conn.commit()
@@ -389,6 +406,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/admin/codes/all":
             with DB_LOCK, db() as conn:
                 conn.execute("DELETE FROM redeemed")
+                conn.execute("DELETE FROM redemption_events")
                 conn.execute("DELETE FROM codes")
                 conn.commit()
             sync = sync_iobroker()
@@ -398,6 +416,7 @@ class Handler(BaseHTTPRequestHandler):
             with DB_LOCK, db() as conn:
                 result = conn.execute("DELETE FROM codes WHERE code = ?", (code,))
                 conn.execute("DELETE FROM redeemed WHERE code = ?", (code,))
+                conn.execute("DELETE FROM redemption_events WHERE code = ?", (code,))
                 conn.commit()
             if result.rowcount == 0:
                 self.send_json({"error": "Code nicht gefunden."}, 404); return
@@ -406,7 +425,8 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/admin/redeemed/"):
             code = urllib.parse.unquote(path[len("/api/admin/redeemed/"):]).strip("/").upper()
             with DB_LOCK, db() as conn:
-                conn.execute("DELETE FROM redeemed WHERE code = ?", (code,)); conn.commit()
+                conn.execute("DELETE FROM redeemed WHERE code = ?", (code,))
+                conn.execute("DELETE FROM redemption_events WHERE code = ?", (code,)); conn.commit()
             sync = sync_iobroker()
             self.send_json({"ok": True, "data": admin_dashboard(), "sync": sync}); return
         self.send_error(HTTPStatus.NOT_FOUND)

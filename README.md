@@ -35,12 +35,13 @@ docker compose up -d --build
    - Betrag und Beschreibung vorhandener Codes bearbeiten
    - neue Codes mit einem angelegten Benutzernamen anlegen
    - Codes für **Alle Benutzer** anlegen; jeder solcher Code kann insgesamt nur einmal eingelöst werden
+   - Codes als **immer gültig / mehrfach einlösbar** markieren
    - einzelne Codes vollständig löschen
    - alle Codes und die Einlösungshistorie vollständig löschen
    - Einloesungen rueckgaengig machen
    - erneute Synchronisierung mit ioBroker
 
-Der eigentliche Code bleibt unverändert; Besitzername, Betrag und Beschreibung können geändert werden. Einzelne Codes können vollständig gelöscht werden; dabei wird auch eine zugehörige Einlösung gelöscht. Zusätzlich gibt es eine Sicherheitsabfrage zum Löschen aller Codes und der gesamten Einlösungshistorie. Für den Besitzer kann ein angelegter Benutzer oder **Alle Benutzer** gewählt werden. Ein Code für **Alle Benutzer** ist nur einmal insgesamt gültig.
+Der eigentliche Code bleibt unverändert; Besitzername, Betrag, Beschreibung und die Einstellung **immer gültig / mehrfach einlösbar** können geändert werden. Standardmäßig bleibt jeder Code einmalig. Wird die Mehrfachverwendung aktiviert, kann der Code wiederholt eingelöst werden; jede Einlösung wird separat in der Historie gespeichert. Einzelne Codes können vollständig gelöscht werden; dabei wird auch eine zugehörige Einlösung gelöscht. Zusätzlich gibt es eine Sicherheitsabfrage zum Löschen aller Codes und der gesamten Einlösungshistorie. Für den Besitzer kann ein angelegter Benutzer oder **Alle Benutzer** gewählt werden. Ein Code für **Alle Benutzer** ist nur einmal insgesamt gültig.
 
 ## ioBroker
 
