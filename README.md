@@ -5,9 +5,8 @@
 Der Stack verwendet ein benanntes Docker-Volume. Dadurch ist kein lokaler `./data`-Ordner erforderlich und der Bind-Mount-Fehler in Portainer wird vermieden.
 
 1. In `docker-compose.yml` den Wert `SESSION_SECRET` durch einen langen eigenen Zufallswert ersetzen.
-2. `IOBROKER_URL` anpassen, falls ioBroker unter einer anderen Adresse erreichbar ist.
-3. Den Stack in Portainer aus dem Git-Repository deployen oder aktualisieren.
-4. Die Anwendung ist danach unter `http://SERVER-IP:8080` erreichbar.
+2. Den Stack in Portainer aus dem Git-Repository deployen oder aktualisieren.
+3. Die Anwendung ist danach unter `http://SERVER-IP:8080` erreichbar.
 
 Alternativ auf dem Docker-Host:
 
