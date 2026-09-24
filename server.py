@@ -18,6 +18,7 @@ PUBLIC = ROOT / "public"
 DB_PATH = os.environ.get("DB_PATH", "/data/gutscheine.db")
 PORT = int(os.environ.get("PORT", "8080"))
 IOBROKER_URL = os.environ.get("IOBROKER_URL", "").rstrip("/")
+IOBROKER_ENABLED = os.environ.get("IOBROKER_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "change-this-session-secret")
 if SESSION_SECRET == "change-this-session-secret":
     print("WARNING: SESSION_SECRET is still the default value.")
@@ -53,6 +54,12 @@ def db():
 
 def now():
     return datetime.now(timezone.utc).isoformat()
+
+def valid_username(value):
+    value = str(value or "").strip()
+    if not 1 <= len(value) <= 32 or value.lower() in ("admin", "administrator") or any(ord(ch) < 32 for ch in value):
+        return None
+    return value
 
 def password_hash(password, salt):
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 240000).hex()
@@ -107,11 +114,8 @@ def json_body(handler):
 
 def totals():
     with db() as conn:
-        rows = conn.execute("SELECT name, COALESCE(SUM(amount), 0) AS total FROM redeemed GROUP BY name").fetchall()
-    result = {"Jan": 0.0, "Kim": 0.0}
-    for row in rows:
-        result[row["name"]] = round(float(row["total"]), 2)
-    return result
+        rows = conn.execute("SELECT name, COALESCE(SUM(amount), 0) AS total FROM redeemed GROUP BY name ORDER BY name").fetchall()
+    return {row["name"]: round(float(row["total"]), 2) for row in rows}
 
 def all_redeemed():
     with db() as conn:
@@ -135,15 +139,16 @@ def admin_dashboard():
     return {"codes": [dict(row) for row in code_rows], "redeemed": all_redeemed(), "totals": totals()}
 
 def sync_iobroker():
+    if not IOBROKER_ENABLED:
+        return {"ok": True, "enabled": False, "message": "ioBroker-Synchronisierung ist deaktiviert."}
     if not IOBROKER_URL:
         return {"ok": False, "message": "Keine ioBroker-Adresse konfiguriert."}
     values = all_redeemed()
     totals_data = totals()
-    # type=string prevents ioBroker from treating the JSON document as an object.
+    # Both payloads are JSON text. type=string prevents ioBroker from treating them as objects.
     requests = [
         ("javascript.0.Adventskalender.gutscheine", json.dumps(values, ensure_ascii=False, separators=(",", ":"))),
-        ("javascript.0.Adventskalender.janBetrag", f"{totals_data['Jan']:.2f} EUR"),
-        ("javascript.0.Adventskalender.kimBetrag", f"{totals_data['Kim']:.2f} EUR")
+        ("javascript.0.Adventskalender.betraege", json.dumps(totals_data, ensure_ascii=False, separators=(",", ":")))
     ]
     try:
         for datapoint, value in requests:
@@ -200,10 +205,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/config":
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            requested_user = valid_username(query.get("user", [""])[0])
             with db() as conn:
-                users = {name: bool(conn.execute("SELECT 1 FROM users WHERE name = ?", (name,)).fetchone()) for name in ("Jan", "Kim")}
                 admin_configured = bool(conn.execute("SELECT 1 FROM admin WHERE id = 1").fetchone())
-            self.send_json({"users": users, "adminConfigured": admin_configured})
+                user_configured = bool(requested_user and conn.execute("SELECT 1 FROM users WHERE name = ?", (requested_user,)).fetchone())
+            self.send_json({"userConfigured": user_configured, "adminConfigured": admin_configured})
         elif path == "/api/me":
             user = user_session(self)
             self.send_json({"authenticated": bool(user), "data": user_data(user) if user else None})
@@ -220,8 +227,8 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         payload = json_body(self)
         if path == "/api/setup":
-            user, password, confirm = payload.get("user"), payload.get("password", ""), payload.get("confirm", "")
-            if user not in ("Jan", "Kim") or len(password) < 4 or password != confirm:
+            user, password, confirm = valid_username(payload.get("user")), payload.get("password", ""), payload.get("confirm", "")
+            if not user or len(password) < 4 or password != confirm:
                 self.send_json({"error": "Benutzer oder Passwortdaten sind ungueltig."}, 400); return
             with DB_LOCK, db() as conn:
                 if conn.execute("SELECT 1 FROM users WHERE name = ?", (user,)).fetchone():
@@ -231,10 +238,12 @@ class Handler(BaseHTTPRequestHandler):
                 conn.commit()
             send_user_login(self, user); return
         if path == "/api/login":
-            user, password = payload.get("user"), payload.get("password", "")
+            user, password = valid_username(payload.get("user")), payload.get("password", "")
             with db() as conn:
-                row = conn.execute("SELECT salt, password_hash FROM users WHERE name = ?", (user,)).fetchone()
-            if not row or not hmac.compare_digest(password_hash(password, row["salt"]), row["password_hash"]):
+                row = conn.execute("SELECT salt, password_hash FROM users WHERE name = ?", (user,)).fetchone() if user else None
+            if not row:
+                self.send_json({"error": "Benutzer nicht gefunden. Lege zuerst ein Passwort fest.", "setupRequired": True}, 404); return
+            if not hmac.compare_digest(password_hash(password, row["salt"]), row["password_hash"]):
                 self.send_json({"error": "Benutzername oder Passwort ist nicht korrekt."}, 401); return
             send_user_login(self, user); return
         if path == "/api/admin/setup":
@@ -290,8 +299,9 @@ class Handler(BaseHTTPRequestHandler):
             description = str(payload.get("description", "")).strip()
             try: amount = round(float(payload.get("amount", 0)), 2)
             except (TypeError, ValueError): amount = -1
-            if len(code) != 4 or not code.isalnum() or name not in ("Jan", "Kim") or amount < 0:
-                self.send_json({"error": "Code, Benutzer oder Betrag ist ungueltig."}, 400); return
+            name = valid_username(name)
+            if len(code) != 4 or not code.isalnum() or not name or amount < 0:
+                self.send_json({"error": "Code, Benutzername oder Betrag ist ungueltig."}, 400); return
             with DB_LOCK, db() as conn:
                 try:
                     conn.execute("INSERT INTO codes VALUES (?, ?, ?, ?, 1, ?, ?)", (code, name, amount, description, now(), now()))
@@ -316,13 +326,16 @@ class Handler(BaseHTTPRequestHandler):
         if not self.require_admin(): return
         code = urllib.parse.unquote(path[len("/api/admin/code/"):]).strip("/").upper()
         payload = json_body(self)
+        name = valid_username(payload.get("name"))
         description = str(payload.get("description", "")).strip()
         try: amount = round(float(payload.get("amount", 0)), 2)
         except (TypeError, ValueError): amount = -1
         if amount < 0:
             self.send_json({"error": "Der Betrag muss 0 oder groesser sein."}, 400); return
+        if not name:
+            self.send_json({"error": "Benutzername ist ungueltig."}, 400); return
         with DB_LOCK, db() as conn:
-            result = conn.execute("UPDATE codes SET amount = ?, description = ?, updated_at = ? WHERE code = ?", (amount, description, now(), code))
+            result = conn.execute("UPDATE codes SET name = ?, amount = ?, description = ?, updated_at = ? WHERE code = ?", (name, amount, description, now(), code))
             if result.rowcount == 0:
                 self.send_json({"error": "Code nicht gefunden."}, 404); return
             conn.commit()

@@ -7,6 +7,7 @@ services:
       - "8080:8080"
     environment:
       PORT: "8080"
+      IOBROKER_ENABLED: "false"
       IOBROKER_URL: "http://192.168.1.8:8087"
       # Diesen Wert durch einen langen eigenen Zufallswert ersetzen.
       SESSION_SECRET: "bitte-durch-einen-langen-zufaelligen-wert-ersetzen"

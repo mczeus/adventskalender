@@ -17,7 +17,8 @@ docker compose up -d --build
 
 ## Benutzer-Login
 
-- `Jan` und `Kim` legen ihr jeweiliges Passwort beim ersten Login selbst fest.
+- Beim ersten Login wird ein frei waehlbarer Benutzername eingegeben und ein Passwort selbst festgelegt.
+- `Jan` und `Kim` sind nicht mehr als Benutzer vorgegeben. Bereits vorhandene alte Gutscheine können weiterhin diese Besitzerbezeichnungen enthalten und im Admin-Bereich angepasst werden.
 - Passwoerter werden serverseitig als PBKDF2-SHA256-Hash in SQLite gespeichert.
 - Gutschein-Codes werden serverseitig geprueft und koennen nur einmal eingeloest werden.
 
@@ -28,33 +29,50 @@ docker compose up -d --build
 3. Im Admin-Bereich stehen zur Verfuegung:
    - Uebersicht aller vorhandenen Codes
    - Uebersicht aller eingeloesten Codes
-   - Summen fuer Jan und Kim
-   - Betrag und Beschreibung vorhandener Codes bearbeiten
-   - neue Codes fuer Jan oder Kim anlegen
+   - Summen pro Benutzer
+   - Besitzername, Betrag und Beschreibung vorhandener Codes bearbeiten
+   - neue Codes mit frei wählbarem Benutzernamen anlegen
    - Einloesungen rueckgaengig machen
    - erneute Synchronisierung mit ioBroker
 
-Der eigentliche Code und die Zuordnung eines bestehenden Codes werden in dieser Version nicht nachtraeglich geaendert. Neue Codes koennen angelegt werden.
+Der eigentliche Code bleibt unverändert; Besitzername, Betrag und Beschreibung können geändert werden. Neue Codes können mit einem frei wählbaren Besitzernamen angelegt werden.
 
 ## ioBroker
+
+Die Kommunikation ist optional. In `docker-compose.yml` steuert diese Variable den Betrieb:
+
+```yaml
+IOBROKER_ENABLED: "false"
+```
+
+Für die Aktivierung auf `"true"` setzen und `IOBROKER_URL` prüfen. Wenn sie deaktiviert ist, bleiben alle Daten vollständig lokal in SQLite; es werden keine ioBroker-Aufrufe ausgeführt.
 
 Der Gutscheinbestand wird als JSON-Text an den Datenpunkt gesendet. Der REST-Aufruf verwendet ausdruecklich `type=string`, damit ioBroker die Liste nicht als Objekt behandelt.
 
 Synchronisierte Datenpunkte:
 
-- `javascript.0.Adventskalender.gutscheine`
-- `javascript.0.Adventskalender.janBetrag`
-- `javascript.0.Adventskalender.kimBetrag`
+- `javascript.0.Adventskalender.gutscheine` - JSON-String mit allen eingelösten Gutscheinen
+- `javascript.0.Adventskalender.betraege` - JSON-String mit der Summe je frei gewähltem Benutzer
 
-Der Gutscheinbestand ist dort ein String und kann in JavaScript mit `JSON.parse(String(state.val))` gelesen werden.
+Beispielinhalt von `betraege`:
 
-Beispiel fuer einen ioBroker-JavaScript-Adapter:
-
-```javascript
-const liste = JSON.parse(String(getState('javascript.0.Adventskalender.gutscheine').val || '[]'));
+```json
+{"Alex":1.2,"Mia":4.5,"Chris":0}
 ```
 
-Falls ioBroker nicht erreichbar ist, bleibt die Aenderung sicher in SQLite gespeichert. Die Anwendung zeigt den Synchronisationsstatus an.
+Beide Datenpunkte müssen in ioBroker vom Datentyp **String** sein. In einem ioBroker-JavaScript können sie so gelesen werden:
+
+```javascript
+const liste = JSON.parse(
+    String(getState('javascript.0.Adventskalender.gutscheine').val || '[]')
+);
+
+const betraege = JSON.parse(
+    String(getState('javascript.0.Adventskalender.betraege').val || '{}')
+);
+```
+
+Falls ioBroker deaktiviert oder nicht erreichbar ist, bleibt die Aenderung sicher in SQLite gespeichert. Die Anwendung zeigt den Synchronisationsstatus an.
 
 ## Datenhaltung
 
