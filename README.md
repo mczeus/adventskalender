@@ -5,8 +5,9 @@
 Der Stack verwendet ein benanntes Docker-Volume. Dadurch ist kein lokaler `./data`-Ordner erforderlich und der Bind-Mount-Fehler in Portainer wird vermieden.
 
 1. In `docker-compose.yml` den Wert `SESSION_SECRET` durch einen langen eigenen Zufallswert ersetzen.
-2. Den Stack in Portainer aus dem Git-Repository deployen oder aktualisieren.
-3. Die Anwendung ist danach unter `http://SERVER-IP:8080` erreichbar.
+2. `IOBROKER_URL` anpassen, falls ioBroker unter einer anderen Adresse erreichbar ist.
+3. Den Stack in Portainer aus dem Git-Repository deployen oder aktualisieren.
+4. Die Anwendung ist danach unter `http://SERVER-IP:8080` erreichbar.
 
 Alternativ auf dem Docker-Host:
 
@@ -17,7 +18,7 @@ docker compose up -d --build
 ## Benutzer-Login
 
 - Beim ersten Login wird ein frei waehlbarer Benutzername eingegeben und ein Passwort selbst festgelegt.
-- Benutzernamen werden ohne Beachtung der Gross-/Kleinschreibung erkannt: `Alex`, `alex` und `ALEX` sind derselbe Benutzer.
+- Benutzernamen werden ohne Beachtung der Gross-/Kleinschreibung erkannt: `Alex`, `alex` und `ALEX` sind derselbe Benutzer.- `Jan` und `Kim` sind nicht mehr als Benutzer vorgegeben. Bereits vorhandene alte Gutscheine können weiterhin diese Besitzerbezeichnungen enthalten und im Admin-Bereich angepasst werden.
 - Passwoerter werden serverseitig als PBKDF2-SHA256-Hash in SQLite gespeichert.
 - Gutschein-Codes werden serverseitig geprueft und koennen nur einmal eingeloest werden.
 
@@ -77,7 +78,7 @@ const betraege = JSON.parse(
 );
 ```
 
-Falls ioBroker deaktiviert oder nicht erreichbar ist, bleibt die Aenderung sicher in SQLite gespeichert. Die Anwendung zeigt den Synchronisationsstatus an.
+Falls ioBroker deaktiviert oder nicht erreichbar ist, bleibt die Aenderung sicher in SQLite gespeichert. Der Synchronisationsstatus ist ausschließlich im Admin-Bereich sichtbar.
 
 ## Datenhaltung
 
@@ -98,7 +99,7 @@ Wenn die Passwoerter komplett neu eingerichtet werden sollen, muss das Volume be
 
 ## Standardcode und interne Bezeichnung
 
-- Der Standardcode `FROH` bleibt beim Löschen aller Codes erhalten und kann auch einzeln nicht gelöscht werden.
+- Die geschützten Codes `FROH` und `GAME` bleiben beim Löschen aller Codes erhalten und können auch einzeln nicht gelöscht werden.
 - Für jeden Code kann im Admin-Bereich eine interne Bezeichnung gepflegt werden. Sie wird weder in der Benutzeransicht noch in der öffentlichen Einlösungshistorie oder der ioBroker-Synchronisierung ausgegeben.
 - Beim Upgrade bestehender Datenbanken wird die zusätzliche Spalte automatisch angelegt.
 
@@ -108,9 +109,11 @@ Wenn die Passwoerter komplett neu eingerichtet werden sollen, muss das Volume be
 Im Admin-Bereich gibt es einen separaten, dauerhaft gespeicherten Bereich **Benutzereingaben**. Dort werden angemeldete Gutscheincode-Eingaben mit Zeitpunkt, Benutzer, Eingabe, Ergebnis und Hinweis protokolliert. Erfasst werden erfolgreiche Einlösungen ebenso wie ungültige Codes, falsche Benutzer, ungültige Formate und bereits eingelöste Codes. Das Protokoll wird beim Löschen aller Codes nicht gelöscht und wird nicht an ioBroker übertragen.
 
 
-## Standardcode FROH
+## Geschützte Codes FROH und GAME
 
 `FROH` ist dauerhaft vorhanden, kostet 0,00 EUR und ist als mehrfach einlösbarer Code konfiguriert. Er kann von Benutzern wiederholt eingelöst werden und bleibt auch nach dem Löschen aller anderen Codes erhalten.
+
+`GAME` ist ebenfalls dauerhaft vorhanden, kostet 0,00 EUR und kann mehrfach eingelöst werden. Die öffentliche Beschreibung lautet exakt **„Hast du mal das rote Geschenk gecheckt?“**. Der Code kann weder einzeln noch über **„Alle Codes löschen“** entfernt werden. Im Admin-Bereich werden `FROH` und `GAME` als geschützte Codes angezeigt.
 
 
 ## IoBroker-Konfiguration im Admin-Bereich
@@ -123,3 +126,18 @@ Die ioBroker-Synchronisierung kann nach der Anmeldung direkt im Admin-Bereich ak
 - **Jetzt synchronisieren:** überträgt den aktuellen lokalen Datenstand
 
 Die Werte werden weiterhin über die ioBroker-HTTP-API als JSON-Text mit `type=string` übertragen. Die interne Code-Bezeichnung und das Benutzer-Eingabeprotokoll werden nicht synchronisiert.
+
+
+## Zeitzone
+
+Die Anwendung verwendet standardmäßig die Zeitzone **Europe/Berlin**. Sie ist in `docker-compose.yml` über `TZ: "Europe/Berlin"` gesetzt. Neue Zeitstempel für Einlösungen, Benutzereingaben und Synchronisierungen werden mit dem korrekten lokalen Offset gespeichert, einschließlich der automatischen Umstellung zwischen Normalzeit und Sommerzeit.
+
+
+## Zeitformat
+
+Zeitpunkte werden in der Anwendung, im Admin-Bereich, im Benutzer-Eingabeprotokoll und in den an ioBroker übertragenen JSON-Daten als `TT.MM.JJJJ HH:MM:SS` ausgegeben, zum Beispiel `24.09.2026 23:15:57`. Eine Zeitzonenkennung wird dabei nicht angezeigt und nicht übertragen.
+
+
+## Easter Egg auf der Admin-Anmeldeseite
+
+Auf der Admin-Anmeldeseite ist das rote Geschenk links unter dem Weihnachtsbaum eine unsichtbare Klickfläche. Ein Klick öffnet das kleine Spiel **Geschenk-Tetris**. Das Spiel unterstützt Pfeiltasten, Leertaste, Escape, Touch-Buttons, Punktestand und einen Highscore für die aktuelle Browser-Sitzung. Das Easter Egg benötigt keine Datenbank und wird nicht protokolliert.

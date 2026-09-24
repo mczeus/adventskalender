@@ -36,6 +36,7 @@ if SESSION_SECRET == "change-this-session-secret":
 CODES = {
     "C5X3": ("Jan", 0.00, "Startcode"),
     "FROH": ("__ALL_USERS__", 0.00, "HO HO HO der Testcode scheint zu funktionieren :)"),
+    "GAME": ("__ALL_USERS__", 0.00, "Hast du mal das rote Geschenk gecheckt?"),
     "B1X5": ("Jan", 0.80, ""), "B1K8": ("Jan", 1.00, "Kalender"), "B9V1": ("Jan", 1.30, "Mama knuddeln"),
     "B7C4": ("Jan", 1.40, "Kalender und Mama eine Gschmiert"), "B4E2": ("Jan", 1.20, "Kim eine Gschmiert"),
     "B2Y6": ("Jan", 1.00, "Kalender und Getränke"), "B6G6": ("Jan", 1.30, ""), "B2Q9": ("Jan", 1.20, "Papa eine Gschmiert"),
@@ -206,10 +207,14 @@ def init_db():
                 for code, (name, amount, description) in CODES.items():
                     conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 0, ?, ?)", (code, name, amount, description or "", timestamp, timestamp))
             conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('default_codes_seeded', '1')")
-        # Keep the built-in test code available after upgrades, even if the database already contains codes.
-        code, (name, amount, description) = "FROH", CODES["FROH"]
-        conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 1, ?, ?)", (code, name, amount, description or "", timestamp, timestamp))
-        conn.execute("UPDATE codes SET reusable = 1 WHERE code = ?", ("FROH",))
+        # Keep the protected built-in codes available after upgrades, even if the database already contains codes.
+        protected_codes = ("FROH", "GAME")
+        for code in protected_codes:
+            name, amount, description = CODES[code]
+            conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 1, ?, ?)", (code, name, amount, description or "", timestamp, timestamp))
+            conn.execute("UPDATE codes SET reusable = 1 WHERE code = ?", (code,))
+        # GAME has a fixed public hint because it points to the red-gift Easter egg.
+        conn.execute("UPDATE codes SET description = ?, active = 1, reusable = 1 WHERE code = ?", (CODES["GAME"][2], "GAME"))
         conn.commit()
 
 def make_session(kind, subject):
@@ -532,6 +537,9 @@ class Handler(BaseHTTPRequestHandler):
             description = str(payload.get("description", "")).strip()
             internal_label = valid_internal_label(payload.get("internal_label"))
             reusable = 1 if payload.get("reusable") in (True, 1, "true", "on", "yes") else 0
+            if code == "GAME":
+                description = CODES["GAME"][2]
+                reusable = 1
             try:
                 amount = round(float(payload.get("amount", 0)), 2)
             except (TypeError, ValueError):
@@ -599,6 +607,9 @@ class Handler(BaseHTTPRequestHandler):
         description = str(payload.get("description", "")).strip()
         internal_label = valid_internal_label(payload.get("internal_label"))
         reusable = 1 if payload.get("reusable") in (True, 1, "true", "on", "yes") else 0
+        if code == "GAME":
+            description = CODES["GAME"][2]
+            reusable = 1
         try: amount = round(float(payload.get("amount", 0)), 2)
         except (TypeError, ValueError): amount = -1
         if amount < 0 or internal_label is None:
@@ -618,18 +629,19 @@ class Handler(BaseHTTPRequestHandler):
             with DB_LOCK, db() as conn:
                 conn.execute("DELETE FROM redeemed")
                 conn.execute("DELETE FROM redemption_events")
-                conn.execute("DELETE FROM codes WHERE code <> ?", ("FROH",))
-                froh_name, froh_amount, froh_description = CODES["FROH"]
+                conn.execute("DELETE FROM codes WHERE code NOT IN (?, ?)", ("FROH", "GAME"))
                 timestamp = now()
-                conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, internal_label, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)", ("FROH", froh_name, froh_amount, froh_description, "", timestamp, timestamp))
-                conn.execute("UPDATE codes SET reusable = 1 WHERE code = ?", ("FROH",))
+                for protected_code in ("FROH", "GAME"):
+                    protected_name, protected_amount, protected_description = CODES[protected_code]
+                    conn.execute("INSERT OR IGNORE INTO codes (code, name, amount, description, internal_label, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)", (protected_code, protected_name, protected_amount, protected_description, "", timestamp, timestamp))
+                    conn.execute("UPDATE codes SET reusable = 1, active = 1, description = ? WHERE code = ?", (protected_description, protected_code))
                 conn.commit()
             sync = sync_iobroker()
             self.send_json({"ok": True, "data": admin_dashboard(), "sync": sync}); return
         if path.startswith("/api/admin/code/"):
             code = urllib.parse.unquote(path[len("/api/admin/code/"):]).strip("/").upper()
-            if code == "FROH":
-                self.send_json({"error": "Der Standardcode FROH kann nicht geloescht werden."}, 400); return
+            if code in ("FROH", "GAME"):
+                self.send_json({"error": f"Der geschuetzte Code {code} kann nicht geloescht werden."}, 400); return
             with DB_LOCK, db() as conn:
                 result = conn.execute("DELETE FROM codes WHERE code = ?", (code,))
                 conn.execute("DELETE FROM redeemed WHERE code = ?", (code,))
