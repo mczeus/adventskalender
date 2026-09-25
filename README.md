@@ -42,8 +42,10 @@ docker compose up -d --build
    - alle Codes und die Einlösungshistorie vollständig löschen
    - Einloesungen rueckgaengig machen
    - erneute Synchronisierung mit ioBroker
+   - alle Codes als druckbare PDF-Liste exportieren
+   - 24 Codes frei auf 24 Adventskalender-Türchen verteilen und als A4-PDF exportieren
 
-Der eigentliche Code bleibt unverändert; Besitzername, Betrag, Beschreibung und die Einstellung **immer gültig / mehrfach einlösbar** können geändert werden. Standardmäßig bleibt jeder Code einmalig. Wird die Mehrfachverwendung aktiviert, kann der Code wiederholt eingelöst werden; jede Einlösung wird separat in der Historie gespeichert. Einzelne Codes können vollständig gelöscht werden; dabei wird auch eine zugehörige Einlösung gelöscht. Zusätzlich gibt es eine Sicherheitsabfrage zum Löschen aller Codes und der gesamten Einlösungshistorie. Für den Besitzer kann ein angelegter Benutzer oder **Alle Benutzer** gewählt werden. Ein Code für **Alle Benutzer** ist nur einmal insgesamt gültig.
+Der eigentliche Code bleibt unverändert; Besitzername, Betrag, Beschreibung und die Einstellung **immer gültig / mehrfach einlösbar** können geändert werden. Standardmäßig bleibt jeder Code einmalig. Wird die Mehrfachverwendung aktiviert, kann der Code wiederholt eingelöst werden; jede Einlösung wird separat in der Historie gespeichert. Einzelne Codes können vollständig gelöscht werden; dabei wird auch eine zugehörige Einlösung gelöscht. Zusätzlich gibt es eine Sicherheitsabfrage zum Löschen aller Codes und der gesamten Einlösungshistorie. Die geschützten Codes `FROH` und `GAME` bleiben dabei erhalten. Für den Besitzer kann ein angelegter Benutzer oder **Alle Benutzer** gewählt werden. Ein Code für **Alle Benutzer** ist nur einmal insgesamt gültig.
 
 ## ioBroker
 
@@ -77,6 +79,18 @@ const betraege = JSON.parse(
 ```
 
 Falls ioBroker deaktiviert oder nicht erreichbar ist, bleibt die Aenderung sicher in SQLite gespeichert. Der Synchronisationsstatus ist ausschließlich im Admin-Bereich sichtbar.
+
+## PDF-Export und Adventskalender
+
+Im Admin-Bereich steht der Bereich **Codes als PDF exportieren** zur Verfügung:
+
+- **Alle Codes als Liste-PDF:** Erstellt eine mehrseitige, druckbare Übersicht mit Code, Gültigkeit, Betrag und öffentlicher Beschreibung.
+- **24-Türchen-Adventskalender:** Für jedes Türchen kann ein eigener Code ausgewählt werden. Die Auswahl kann beliebig angeordnet werden; jeder Code darf nur einmal vorkommen.
+- Das Adventskalender-PDF wird als eine A4-Seite mit einem Raster aus 24 nummerierten Türchen erzeugt.
+- Interne Bezeichnungen werden aus Datenschutz- und Übersichtsgründen nicht mitgedruckt.
+
+Die PDF-Dateien werden direkt durch die Anwendung erzeugt. Dafür ist keine zusätzliche PDF-Software und keine weitere Docker-Konfiguration erforderlich.
+
 
 ## Datenhaltung
 

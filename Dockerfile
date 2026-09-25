@@ -4,8 +4,7 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=8080 \
-    DB_PATH=/data/gutscheine.db \
-    IOBROKER_URL=http://192.168.1.8:8087
+    DB_PATH=/data/gutscheine.db
 
 COPY server.py ./server.py
 COPY public ./public

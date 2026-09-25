@@ -374,6 +374,158 @@ def send_admin_login(handler):
     cookie = f"session={make_session('admin', 'Admin')}; Max-Age=1209600; Path=/; HttpOnly; SameSite=Lax"
     handler.send_json({"ok": True, "data": admin_dashboard()}, cookies=[cookie])
 
+def pdf_hex_text(value):
+    text = str(value or "").replace("\n", " ").replace("\r", " ")
+    return text.encode("cp1252", "replace").hex().upper()
+
+def pdf_number(value):
+    return f"{float(value):.2f}".rstrip("0").rstrip(".")
+
+def pdf_text(commands, text, x, y, size=10, bold=False):
+    font = "/F2" if bold else "/F1"
+    commands.append(f"BT {font} {pdf_number(size)} Tf {pdf_number(x)} {pdf_number(y)} Td <{pdf_hex_text(text)}> Tj ET")
+
+def pdf_rect(commands, x, y, width, height, fill=None, stroke=(0.43, 0.11, 0.16), line_width=0.8):
+    if fill:
+        r, g, b = fill
+        commands.append(f"q {pdf_number(r)} {pdf_number(g)} {pdf_number(b)} rg {pdf_number(x)} {pdf_number(y)} {pdf_number(width)} {pdf_number(height)} re f Q")
+    if stroke:
+        r, g, b = stroke
+        commands.append(f"q {pdf_number(line_width)} w {pdf_number(r)} {pdf_number(g)} {pdf_number(b)} RG {pdf_number(x)} {pdf_number(y)} {pdf_number(width)} {pdf_number(height)} re S Q")
+
+def pdf_line(commands, x1, y1, x2, y2, color=(0.45, 0.12, 0.16), line_width=0.8):
+    r, g, b = color
+    commands.append(f"q {pdf_number(line_width)} w {pdf_number(r)} {pdf_number(g)} {pdf_number(b)} RG {pdf_number(x1)} {pdf_number(y1)} m {pdf_number(x2)} {pdf_number(y2)} l S Q")
+
+def wrap_pdf_text(value, max_chars):
+    words = str(value or "").split()
+    if not words:
+        return []
+    lines, current = [], ""
+    for word in words:
+        if len(word) > max_chars:
+            if current:
+                lines.append(current)
+                current = ""
+            while len(word) > max_chars:
+                lines.append(word[:max_chars - 1] + "-")
+                word = word[max_chars - 1:]
+            current = word
+        elif not current:
+            current = word
+        elif len(current) + 1 + len(word) <= max_chars:
+            current += " " + word
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+def pdf_page_content(commands):
+    return ("\n".join(commands) + "\n").encode("ascii")
+
+def build_pdf(page_commands):
+    page_count = len(page_commands) or 1
+    objects = [None, b"<< /Type /Catalog /Pages 2 0 R >>", None,
+               b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+               b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"]
+    content_refs = []
+    page_refs = []
+    for commands in page_commands or [[]]:
+        content_refs.append(len(objects))
+        payload = pdf_page_content(commands)
+        objects.append(f"<< /Length {len(payload)} >>\nstream\n".encode("ascii") + payload + b"endstream")
+        page_refs.append(len(objects))
+        objects.append(None)
+    objects[2] = (f"<< /Type /Pages /Kids [{' '.join(f'{ref} 0 R' for ref in page_refs)}] /Count {page_count} >>").encode("ascii")
+    for ref, content_ref in zip(page_refs, content_refs):
+        objects[ref] = (f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.28 841.89] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents {content_ref} 0 R >>").encode("ascii")
+    output = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0]
+    for obj in objects[1:]:
+        offsets.append(len(output))
+        output.extend(f"{len(offsets) - 1} 0 obj\n".encode("ascii"))
+        output.extend(obj)
+        output.extend(b"\nendobj\n")
+    xref = len(output)
+    output.extend(f"xref\n0 {len(objects)}\n0000000000 65535 f \n".encode("ascii"))
+    for offset in offsets[1:]:
+        output.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    output.extend(f"trailer\n<< /Size {len(objects)} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode("ascii"))
+    return bytes(output)
+
+def code_owner_for_pdf(value):
+    return "Alle Benutzer" if value == ALL_USERS else str(value or "")
+
+def money_for_pdf(value):
+    return f"{float(value or 0):.2f} EUR"
+
+def build_code_list_pdf(codes):
+    pages, commands = [], []
+    def start_page(page_number):
+        nonlocal commands
+        commands = []
+        pdf_text(commands, "Weihnachts-Gutscheine", 32, 805, 20, True)
+        pdf_text(commands, "Code-Liste zum Ausdrucken", 32, 784, 10)
+        pdf_text(commands, f"Seite {page_number}", 500, 805, 8)
+        y = 758
+        pdf_rect(commands, 28, y - 7, 539, 25, fill=(0.95, 0.88, 0.72), stroke=(0.45, 0.12, 0.16), line_width=0.7)
+        for label, x in (("Code", 38), ("Gültig für", 95), ("Betrag", 245), ("Beschreibung", 310)):
+            pdf_text(commands, label, x, y + 1, 8, True)
+        return y - 32
+    y = start_page(1)
+    page_number = 1
+    for index, code in enumerate(codes, 1):
+        if y < 62:
+            pages.append(commands)
+            page_number += 1
+            y = start_page(page_number)
+        fill = (1.0, 0.98, 0.93) if index % 2 else (0.98, 0.94, 0.86)
+        pdf_rect(commands, 28, y - 7, 539, 31, fill=fill, stroke=(0.82, 0.72, 0.55), line_width=0.35)
+        pdf_text(commands, str(code["code"]), 38, y + 3, 9, True)
+        pdf_text(commands, code_owner_for_pdf(code["name"]), 95, y + 3, 8)
+        pdf_text(commands, money_for_pdf(code["amount"]), 245, y + 3, 8)
+        desc_lines = wrap_pdf_text(code["description"] or "-", 43)[:2]
+        for line_index, line in enumerate(desc_lines):
+            pdf_text(commands, line, 310, y + 4 - line_index * 10, 7.5)
+        y -= 34
+    pages.append(commands)
+    return build_pdf(pages)
+
+def build_advent_calendar_pdf(codes):
+    commands = []
+    pdf_text(commands, "Unser Adventskalender", 32, 807, 21, True)
+    pdf_text(commands, "24 Gutscheincodes zum Ausschneiden oder Aufkleben", 32, 786, 9)
+    margin_x, gap = 28, 8
+    grid_top = 755
+    card_width = (595.28 - 2 * margin_x - 3 * gap) / 4
+    card_height = 112
+    for index, code in enumerate(codes):
+        col = index % 4
+        row = index // 4
+        x = margin_x + col * (card_width + gap)
+        y = grid_top - (row + 1) * card_height - row * gap
+        fill = [(0.93, 0.96, 0.91), (0.98, 0.91, 0.84), (0.91, 0.94, 0.98), (0.98, 0.90, 0.91)][index % 4]
+        pdf_rect(commands, x, y, card_width, card_height, fill=fill, stroke=(0.45, 0.12, 0.16), line_width=1.0)
+        pdf_text(commands, f"Türchen {index + 1}", x + 9, y + card_height - 18, 8, True)
+        pdf_text(commands, str(code["code"]), x + 9, y + card_height - 49, 19, True)
+        pdf_text(commands, code_owner_for_pdf(code["name"]), x + 9, y + 30, 7.5)
+        pdf_text(commands, money_for_pdf(code["amount"]), x + 9, y + 18, 7.5)
+        description = wrap_pdf_text(code["description"] or "", 24)[:2]
+        for line_index, line in enumerate(description):
+            pdf_text(commands, line, x + card_width - 9 - min(78, len(line) * 3.2), y + 30 - line_index * 9, 6.5)
+    return build_pdf([commands])
+
+def load_export_codes(selected_codes=None):
+    with db() as conn:
+        if selected_codes is None:
+            return [dict(row) for row in conn.execute("SELECT code, name, amount, description FROM codes ORDER BY name COLLATE NOCASE, code").fetchall()]
+        placeholders = ",".join("?" for _ in selected_codes)
+        rows = conn.execute(f"SELECT code, name, amount, description FROM codes WHERE code IN ({placeholders})", selected_codes).fetchall()
+    by_code = {row["code"]: dict(row) for row in rows}
+    return [by_code[code] for code in selected_codes]
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "WeihnachtsGutscheine/2.0"
     def log_message(self, format, *args):
@@ -390,6 +542,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
+    def send_binary(self, data, content_type, filename):
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f"attachment; filename=\"{filename}\"")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(data)
     def send_file(self, path):
         if not path.exists() or not path.is_file():
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -431,6 +592,24 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         payload = json_body(self)
+        if path == "/api/admin/export/codes":
+            if not self.require_admin(): return
+            if not isinstance(payload, dict):
+                self.send_json({"error": "Ungültige Exportdaten."}, 400); return
+            mode = str(payload.get("mode", "list")).lower()
+            if mode == "advent":
+                selected = payload.get("codes")
+                if not isinstance(selected, list) or len(selected) != 24:
+                    self.send_json({"error": "Für den Adventskalender müssen genau 24 Codes ausgewählt werden."}, 400); return
+                normalized = [str(code).strip().upper() for code in selected]
+                if any(len(code) != 4 or not code.isalnum() for code in normalized) or len(set(normalized)) != 24:
+                    self.send_json({"error": "Die 24 Türchen müssen unterschiedliche gültige Codes enthalten."}, 400); return
+                codes = load_export_codes(normalized)
+                if len(codes) != 24:
+                    self.send_json({"error": "Mindestens ein ausgewählter Code wurde nicht gefunden."}, 400); return
+                self.send_binary(build_advent_calendar_pdf(codes), "application/pdf", "adventskalender-24-tuerchen.pdf"); return
+            codes = load_export_codes()
+            self.send_binary(build_code_list_pdf(codes), "application/pdf", "gutscheine-codeliste.pdf"); return
         if path == "/api/setup":
             user, password, confirm = valid_username(payload.get("user")), payload.get("password", ""), payload.get("confirm", "")
             if not user or len(password) < 4 or password != confirm:
