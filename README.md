@@ -84,10 +84,10 @@ Falls ioBroker deaktiviert oder nicht erreichbar ist, bleibt die Aenderung siche
 
 Im Admin-Bereich steht der Bereich **Codes als PDF exportieren** zur Verfügung:
 
-- **Alle Codes als Liste-PDF:** Erstellt eine mehrseitige, druckbare Übersicht mit Code, Gültigkeit, Betrag und öffentlicher Beschreibung.
+- **Alle Codes als Liste-PDF:** Erstellt eine mehrseitige, druckbare Übersicht ausschließlich mit dem vierstelligen Code und dem zugehörigen Benutzernamen.
 - **24-Türchen-Adventskalender:** Für jedes Türchen kann ein eigener Code ausgewählt werden. Die Auswahl kann beliebig angeordnet werden; jeder Code darf nur einmal vorkommen.
 - Das Adventskalender-PDF wird als eine A4-Seite mit einem Raster aus 24 nummerierten Türchen erzeugt.
-- Interne Bezeichnungen werden aus Datenschutz- und Übersichtsgründen nicht mitgedruckt.
+- Im PDF werden keine Beträge, Beschreibungen oder internen Bezeichnungen ausgegeben.
 
 Die PDF-Dateien werden direkt durch die Anwendung erzeugt. Dafür ist keine zusätzliche PDF-Software und keine weitere Docker-Konfiguration erforderlich.
 

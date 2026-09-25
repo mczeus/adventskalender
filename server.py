@@ -471,7 +471,7 @@ def build_code_list_pdf(codes):
         pdf_text(commands, f"Seite {page_number}", 500, 805, 8)
         y = 758
         pdf_rect(commands, 28, y - 7, 539, 25, fill=(0.95, 0.88, 0.72), stroke=(0.45, 0.12, 0.16), line_width=0.7)
-        for label, x in (("Code", 38), ("Gültig für", 95), ("Betrag", 245), ("Beschreibung", 310)):
+        for label, x in (("Code", 38), ("Gültig für", 170)):
             pdf_text(commands, label, x, y + 1, 8, True)
         return y - 32
     y = start_page(1)
@@ -483,12 +483,8 @@ def build_code_list_pdf(codes):
             y = start_page(page_number)
         fill = (1.0, 0.98, 0.93) if index % 2 else (0.98, 0.94, 0.86)
         pdf_rect(commands, 28, y - 7, 539, 31, fill=fill, stroke=(0.82, 0.72, 0.55), line_width=0.35)
-        pdf_text(commands, str(code["code"]), 38, y + 3, 9, True)
-        pdf_text(commands, code_owner_for_pdf(code["name"]), 95, y + 3, 8)
-        pdf_text(commands, money_for_pdf(code["amount"]), 245, y + 3, 8)
-        desc_lines = wrap_pdf_text(code["description"] or "-", 43)[:2]
-        for line_index, line in enumerate(desc_lines):
-            pdf_text(commands, line, 310, y + 4 - line_index * 10, 7.5)
+        pdf_text(commands, str(code["code"]), 38, y + 3, 12, True)
+        pdf_text(commands, code_owner_for_pdf(code["name"]), 170, y + 3, 10)
         y -= 34
     pages.append(commands)
     return build_pdf(pages)
@@ -509,20 +505,16 @@ def build_advent_calendar_pdf(codes):
         fill = [(0.93, 0.96, 0.91), (0.98, 0.91, 0.84), (0.91, 0.94, 0.98), (0.98, 0.90, 0.91)][index % 4]
         pdf_rect(commands, x, y, card_width, card_height, fill=fill, stroke=(0.45, 0.12, 0.16), line_width=1.0)
         pdf_text(commands, f"Türchen {index + 1}", x + 9, y + card_height - 18, 8, True)
-        pdf_text(commands, str(code["code"]), x + 9, y + card_height - 49, 19, True)
-        pdf_text(commands, code_owner_for_pdf(code["name"]), x + 9, y + 30, 7.5)
-        pdf_text(commands, money_for_pdf(code["amount"]), x + 9, y + 18, 7.5)
-        description = wrap_pdf_text(code["description"] or "", 24)[:2]
-        for line_index, line in enumerate(description):
-            pdf_text(commands, line, x + card_width - 9 - min(78, len(line) * 3.2), y + 30 - line_index * 9, 6.5)
+        pdf_text(commands, str(code["code"]), x + 9, y + card_height - 53, 19, True)
+        pdf_text(commands, code_owner_for_pdf(code["name"]), x + 9, y + 25, 9)
     return build_pdf([commands])
 
 def load_export_codes(selected_codes=None):
     with db() as conn:
         if selected_codes is None:
-            return [dict(row) for row in conn.execute("SELECT code, name, amount, description FROM codes ORDER BY name COLLATE NOCASE, code").fetchall()]
+            return [dict(row) for row in conn.execute("SELECT code, name FROM codes ORDER BY name COLLATE NOCASE, code").fetchall()]
         placeholders = ",".join("?" for _ in selected_codes)
-        rows = conn.execute(f"SELECT code, name, amount, description FROM codes WHERE code IN ({placeholders})", selected_codes).fetchall()
+        rows = conn.execute(f"SELECT code, name FROM codes WHERE code IN ({placeholders})", selected_codes).fetchall()
     by_code = {row["code"]: dict(row) for row in rows}
     return [by_code[code] for code in selected_codes]
 
