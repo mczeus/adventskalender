@@ -1,7 +1,6 @@
 # Weihnachts-Gutscheine als Docker-Container
 
-<img src="images/adventskalender.png" width="300" alt="Benutzer">
-<img src="images/adventskalenderAdmin.png" width="300" alt="Admin">
+<img src="images/adventskalender.png" width="250"> <img src="images/adventskalenderAdmin.png" width="250">
 
 ## Start in Portainer
 
