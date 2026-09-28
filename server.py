@@ -36,7 +36,7 @@ if SESSION_SECRET == "change-this-session-secret":
 CODES = {
     "C5X3": ("Jan", 0.00, "Startcode"),
     "FROH": ("__ALL_USERS__", 0.00, "HO HO HO der Testcode scheint zu funktionieren :)"),
-    "GAME": ("__ALL_USERS__", 0.00, "Hast du mal das rote Geschenk im Adminbereich gecheckt?"),
+    "GAME": ("__ALL_USERS__", 0.00, "Hast du mal das rote Geschenk gecheckt?"),
     "B1X5": ("Jan", 0.80, ""), "B1K8": ("Jan", 1.00, "Kalender"), "B9V1": ("Jan", 1.30, "Mama knuddeln"),
     "B7C4": ("Jan", 1.40, "Kalender und Mama eine Gschmiert"), "B4E2": ("Jan", 1.20, "Kim eine Gschmiert"),
     "B2Y6": ("Jan", 1.00, "Kalender und Getränke"), "B6G6": ("Jan", 1.30, ""), "B2Q9": ("Jan", 1.20, "Papa eine Gschmiert"),
@@ -215,6 +215,9 @@ def init_db():
             conn.execute("UPDATE codes SET reusable = 1 WHERE code = ?", (code,))
         # GAME has a fixed public hint because it points to the red-gift Easter egg.
         conn.execute("UPDATE codes SET description = ?, active = 1, reusable = 1 WHERE code = ?", (CODES["GAME"][2], "GAME"))
+        # A code for all users must be usable by multiple users. Apply this rule
+        # also to existing databases created before the rule was introduced.
+        conn.execute("UPDATE codes SET reusable = 1 WHERE name = ?", (ALL_USERS,))
         conn.commit()
 
 def make_session(kind, subject):
@@ -711,6 +714,8 @@ class Handler(BaseHTTPRequestHandler):
             if code == "GAME":
                 description = CODES["GAME"][2]
                 reusable = 1
+            if name == ALL_USERS:
+                reusable = 1
             try:
                 amount = round(float(payload.get("amount", 0)), 2)
             except (TypeError, ValueError):
@@ -731,7 +736,10 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 self.send_json({"error": "Benutzername ist ungueltig."}, 400); return
             with DB_LOCK, db() as conn:
-                result = conn.execute("UPDATE codes SET name = ?, updated_at = ? WHERE code = ?", (name, now(), code))
+                if name == ALL_USERS:
+                    result = conn.execute("UPDATE codes SET name = ?, reusable = 1, updated_at = ? WHERE code = ?", (name, now(), code))
+                else:
+                    result = conn.execute("UPDATE codes SET name = ?, updated_at = ? WHERE code = ?", (name, now(), code))
                 if result.rowcount == 0:
                     self.send_json({"error": "Code nicht gefunden."}, 404); return
                 conn.commit()
@@ -747,6 +755,8 @@ class Handler(BaseHTTPRequestHandler):
             try: amount = round(float(payload.get("amount", 0)), 2)
             except (TypeError, ValueError): amount = -1
             name = valid_owner(name)
+            if name == ALL_USERS:
+                reusable = 1
             if len(code) != 4 or not code.isalnum() or not name or internal_label is None or amount < 0:
                 self.send_json({"error": "Code, Benutzername, interne Bezeichnung oder Betrag ist ungueltig."}, 400); return
             with DB_LOCK, db() as conn:
@@ -780,6 +790,8 @@ class Handler(BaseHTTPRequestHandler):
         reusable = 1 if payload.get("reusable") in (True, 1, "true", "on", "yes") else 0
         if code == "GAME":
             description = CODES["GAME"][2]
+            reusable = 1
+        if name == ALL_USERS:
             reusable = 1
         try: amount = round(float(payload.get("amount", 0)), 2)
         except (TypeError, ValueError): amount = -1
