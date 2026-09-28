@@ -1,8 +1,5 @@
 # Weihnachts-Gutscheine als Docker-Container
 
-<img src="adventskalender.png" alt="Alternativtext" width="500">
-
-
 ## Start in Portainer
 
 Der Stack verwendet ein benanntes Docker-Volume. Dadurch ist kein lokaler `./data`-Ordner erforderlich und der Bind-Mount-Fehler in Portainer wird vermieden.
@@ -38,7 +35,7 @@ docker compose up -d --build
    - Besitzername eines Codes wird bei Auswahl sofort gespeichert
    - Betrag und Beschreibung vorhandener Codes bearbeiten
    - neue Codes mit einem angelegten Benutzernamen anlegen
-   - Codes für **Alle Benutzer** anlegen; jeder solcher Code kann insgesamt nur einmal eingelöst werden
+   - Codes für **Alle Benutzer** anlegen; standardmäßig kann jeder Benutzer den Code genau einmal einlösen, mit aktivierter Mehrfachverwendung auch wiederholt
    - Codes als **immer gültig / mehrfach einlösbar** markieren
    - Änderungen über einen gemeinsamen Speichervorgang zuverlässig in die Datenbank schreiben
    - einzelne Codes vollständig löschen
@@ -48,7 +45,7 @@ docker compose up -d --build
    - alle Codes als druckbare PDF-Liste exportieren
    - 24 Codes frei auf 24 Adventskalender-Türchen verteilen und als A4-PDF exportieren
 
-Der eigentliche Code bleibt unverändert; Besitzername, Betrag, Beschreibung und die Einstellung **immer gültig / mehrfach einlösbar** können geändert werden. Standardmäßig bleibt jeder Code einmalig. Wird die Mehrfachverwendung aktiviert, kann der Code wiederholt eingelöst werden; jede Einlösung wird separat in der Historie gespeichert. Einzelne Codes können vollständig gelöscht werden; dabei wird auch eine zugehörige Einlösung gelöscht. Zusätzlich gibt es eine Sicherheitsabfrage zum Löschen aller Codes und der gesamten Einlösungshistorie. Die geschützten Codes `FROH` und `GAME` bleiben dabei erhalten. Für den Besitzer kann ein angelegter Benutzer oder **Alle Benutzer** gewählt werden. Ein Code für **Alle Benutzer** ist nur einmal insgesamt gültig.
+Der eigentliche Code bleibt unverändert; Besitzername, Betrag, Beschreibung und die Einstellung **immer gültig / mehrfach einlösbar** können geändert werden. Standardmäßig bleibt jeder Code einmalig. Wird die Mehrfachverwendung aktiviert, kann der Code wiederholt eingelöst werden; jede Einlösung wird separat in der Historie gespeichert. Einzelne Codes können vollständig gelöscht werden; dabei wird auch eine zugehörige Einlösung gelöscht. Zusätzlich gibt es eine Sicherheitsabfrage zum Löschen aller Codes und der gesamten Einlösungshistorie. Die geschützten Codes `FROH` und `GAME` bleiben dabei erhalten. Für den Besitzer kann ein angelegter Benutzer oder **Alle Benutzer** gewählt werden. Bei **Alle Benutzer** kann jeder Benutzer einen normalen Code standardmäßig genau einmal einlösen. Wird **Mehrfach** aktiviert, kann auch derselbe Benutzer den Code wiederholt einlösen.
 
 ## ioBroker
 

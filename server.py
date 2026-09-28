@@ -215,9 +215,20 @@ def init_db():
             conn.execute("UPDATE codes SET reusable = 1 WHERE code = ?", (code,))
         # GAME has a fixed public hint because it points to the red-gift Easter egg.
         conn.execute("UPDATE codes SET description = ?, active = 1, reusable = 1 WHERE code = ?", (CODES["GAME"][2], "GAME"))
-        # A code for all users must be usable by multiple users. Apply this rule
-        # also to existing databases created before the rule was introduced.
-        conn.execute("UPDATE codes SET reusable = 1 WHERE name = ?", (ALL_USERS,))
+        # Migrate databases from the former behavior where every code for
+        # all users was forced to reusable. Run this only once so later admin
+        # changes to the reusable checkbox are preserved.
+        migration_key = "all_users_once_per_user_migrated"
+        if not conn.execute("SELECT 1 FROM app_meta WHERE key = ?", (migration_key,)).fetchone():
+            conn.execute(
+                "UPDATE codes SET reusable = 0 "
+                "WHERE name = ? AND code NOT IN (?, ?)",
+                (ALL_USERS, "FROH", "GAME")
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, '1')",
+                (migration_key,)
+            )
         conn.commit()
 
 def make_session(kind, subject):
@@ -670,7 +681,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": detail}, 400); return
             try:
                 with DB_LOCK, db() as conn:
-                    if not voucher["reusable"]:
+                    all_users_once_per_user = (
+                        voucher["name"] == ALL_USERS
+                        and not voucher["reusable"]
+                    )
+                    if all_users_once_per_user:
+                        if conn.execute(
+                            "SELECT 1 FROM redemption_events "
+                            "WHERE code = ? AND lower(name) = lower(?) LIMIT 1",
+                            (code, user)
+                        ).fetchone():
+                            raise sqlite3.IntegrityError("code already used by this user")
+                    elif not voucher["reusable"]:
                         if conn.execute("SELECT 1 FROM redemption_events WHERE code = ? LIMIT 1", (code,)).fetchone():
                             raise sqlite3.IntegrityError("one-time code already used")
                         conn.execute("INSERT INTO redeemed VALUES (?, ?, ?, ?, ?)", (code, user, voucher["amount"], voucher["description"], now()))
@@ -714,8 +736,6 @@ class Handler(BaseHTTPRequestHandler):
             if code == "GAME":
                 description = CODES["GAME"][2]
                 reusable = 1
-            if name == ALL_USERS:
-                reusable = 1
             try:
                 amount = round(float(payload.get("amount", 0)), 2)
             except (TypeError, ValueError):
@@ -736,7 +756,7 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 self.send_json({"error": "Benutzername ist ungueltig."}, 400); return
             with DB_LOCK, db() as conn:
-                if name == ALL_USERS:
+                if name == ALL_USERS and code in ("FROH", "GAME"):
                     result = conn.execute("UPDATE codes SET name = ?, reusable = 1, updated_at = ? WHERE code = ?", (name, now(), code))
                 else:
                     result = conn.execute("UPDATE codes SET name = ?, updated_at = ? WHERE code = ?", (name, now(), code))
@@ -755,8 +775,6 @@ class Handler(BaseHTTPRequestHandler):
             try: amount = round(float(payload.get("amount", 0)), 2)
             except (TypeError, ValueError): amount = -1
             name = valid_owner(name)
-            if name == ALL_USERS:
-                reusable = 1
             if len(code) != 4 or not code.isalnum() or not name or internal_label is None or amount < 0:
                 self.send_json({"error": "Code, Benutzername, interne Bezeichnung oder Betrag ist ungueltig."}, 400); return
             with DB_LOCK, db() as conn:
@@ -790,8 +808,6 @@ class Handler(BaseHTTPRequestHandler):
         reusable = 1 if payload.get("reusable") in (True, 1, "true", "on", "yes") else 0
         if code == "GAME":
             description = CODES["GAME"][2]
-            reusable = 1
-        if name == ALL_USERS:
             reusable = 1
         try: amount = round(float(payload.get("amount", 0)), 2)
         except (TypeError, ValueError): amount = -1
