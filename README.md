@@ -6,9 +6,20 @@
 
 Der Stack verwendet ein benanntes Docker-Volume. Dadurch ist kein lokaler `./data`-Ordner erforderlich und der Bind-Mount-Fehler in Portainer wird vermieden.
 
-1. In `docker-compose.yml` den Wert `SESSION_SECRET` durch einen langen eigenen Zufallswert ersetzen.
-2. Den Stack in Portainer aus dem Git-Repository deployen oder aktualisieren.
-3. Die Anwendung ist danach unter `http://SERVER-IP:8080` erreichbar.
+1. Den Stack in Portainer aus dem Git-Repository deployen.
+2. Beim Erstellen oder Bearbeiten des Stacks unter **Environment variables** eine Variable namens `SESSION_SECRET` anlegen.
+3. Als Wert einen langen zufälligen geheimen Wert eintragen.
+4. Den Stack deployen oder aktualisieren.
+5. Die Anwendung ist danach unter `http://SERVER-IP:8080` erreichbar.
+
+Beispiel für die Portainer-Variable:
+
+```text
+Name: SESSION_SECRET
+Wert: 9f8c2a7d4e1b6f0a3c5d8e2f7a1b4c6d9e0f3a8b5c2d7e1
+```
+
+Der geheime Wert muss nicht in der `docker-compose.yml` oder im Git-Repository gespeichert werden.
 
 ioBroker muss nicht in Docker oder in `docker-compose.yml` eingetragen werden. Die Verbindung wird nach der Anmeldung direkt im Admin-Bereich eingerichtet.
 

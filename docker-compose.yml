@@ -9,7 +9,7 @@ services:
       TZ: "Europe/Berlin"
       PORT: "8080"
       # Diesen Wert durch einen langen eigenen Zufallswert ersetzen.
-      SESSION_SECRET: "bitte-durch-einen-langen-zufaelligen-wert-ersetzen"
+      SESSION_SECRET: "${SESSION_SECRET:?SESSION_SECRET muss in Portainer gesetzt werden}"
     volumes:
       - gutscheine_data:/data
 
