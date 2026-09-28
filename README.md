@@ -29,6 +29,76 @@ Alternativ auf dem Docker-Host:
 docker compose up -d --build
 ```
 
+## Synology Container Manager
+
+Die Anwendung kann auch mit dem **Synology Container Manager** als Compose-Projekt betrieben werden.
+
+### Projektordner vorbereiten
+
+1. Das ZIP auf die Synology kopieren und entpacken, zum Beispiel nach:
+
+   ```text
+   /volume1/docker/weihnachts-gutscheine/
+   ```
+
+2. Im Projektordner müssen sich direkt diese Dateien und Ordner befinden:
+
+   ```text
+   /volume1/docker/weihnachts-gutscheine/docker-compose.yml
+   /volume1/docker/weihnachts-gutscheine/Dockerfile
+   /volume1/docker/weihnachts-gutscheine/server.py
+   /volume1/docker/weihnachts-gutscheine/public/
+   ```
+
+   Falls das Entpacken einen zusätzlichen Unterordner erzeugt, muss dieser als Projektordner verwendet werden oder der Inhalt eine Ebene nach oben verschoben werden.
+
+### SESSION_SECRET einrichten
+
+Erstelle im selben Ordner wie die `docker-compose.yml` eine Datei mit dem Namen `.env`:
+
+```text
+/volume1/docker/weihnachts-gutscheine/.env
+```
+
+Inhalt der Datei:
+
+```env
+SESSION_SECRET=hier-einen-langen-eigenen-zufaelligen-wert-eintragen
+```
+
+Verwende einen eigenen langen zufälligen Wert. Die Datei `.env` sollte nicht in das Git-Repository hochgeladen werden.
+
+### Projekt im Container Manager erstellen
+
+1. **Container Manager** öffnen.
+2. Zu **Projekt** wechseln und **Erstellen** auswählen.
+3. Einen Projektnamen vergeben, zum Beispiel `weihnachts-gutscheine`.
+4. Als Projektpfad den Ordner `/volume1/docker/weihnachts-gutscheine/` auswählen.
+5. Die vorhandene `docker-compose.yml` als Compose-Datei verwenden.
+6. Das Projekt erstellen und anschließend starten.
+
+Die vorhandene Compose-Konfiguration liest `SESSION_SECRET` aus der `.env`-Datei. Die Variable muss deshalb nicht in der `docker-compose.yml` oder im Git-Repository gespeichert werden.
+
+### Anwendung aufrufen
+
+Die Anwendung ist anschließend unter folgender Adresse erreichbar:
+
+```text
+http://IP-DEINER-SYNOLOGY:8080
+```
+
+Beispiel:
+
+```text
+http://192.168.178.50:8080
+```
+
+### Updates durchführen
+
+Bei einem Update den Projektordner mit den neuen Dateien aktualisieren, die `.env`-Datei jedoch behalten. Danach das Projekt im Container Manager stoppen und über **Erstellen/Build** neu bauen. Ein einfacher Neustart reicht bei Änderungen am Dockerfile oder am Anwendungscode nicht immer aus.
+
+Das benannte Docker-Volume `gutscheine_data` bleibt dabei erhalten und enthält die dauerhaften Gutschein-, Benutzer- und Administratordaten.
+
 ## Benutzer-Login
 
 - Beim ersten Login wird ein frei waehlbarer Benutzername eingegeben und ein Passwort selbst festgelegt.
