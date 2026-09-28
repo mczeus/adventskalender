@@ -1,5 +1,7 @@
 # Weihnachts-Gutscheine als Docker-Container
 
+<img src="adventskalender.png" width="300" alt="Alternativtext">
+
 ## Start in Portainer
 
 Der Stack verwendet ein benanntes Docker-Volume. Dadurch ist kein lokaler `./data`-Ordner erforderlich und der Bind-Mount-Fehler in Portainer wird vermieden.
