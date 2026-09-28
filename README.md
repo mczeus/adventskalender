@@ -1,6 +1,8 @@
 # Weihnachts-Gutscheine als Docker-Container
 
-<img src="images/adventskalender.png" width="250"> <img src="images/adventskalenderAdmin.png" width="250">
+![Adventskalender](images/adventskalender.png)
+
+![Adminbereich](images/adventskalenderAdmin.png)
 
 ## Start in Portainer
 
@@ -35,7 +37,7 @@ Die Anwendung kann auch mit dem **Synology Container Manager** als Compose-Proje
 
 ### Projektordner vorbereiten
 
-<img src="images/zip.png" width="250">
+![ZIP entpacken](images/zip.png)
 
 1. Das ZIP auf die Synology kopieren und entpacken, zum Beispiel nach:
 
@@ -108,6 +110,12 @@ Das benannte Docker-Volume `gutscheine_data` bleibt dabei erhalten und enthält 
 - `Jan` und `Kim` sind nicht mehr als Benutzer vorgegeben. Bereits vorhandene alte Gutscheine können weiterhin diese Besitzerbezeichnungen enthalten und im Admin-Bereich angepasst werden.
 - Passwoerter werden serverseitig als PBKDF2-SHA256-Hash in SQLite gespeichert.
 - Gutschein-Codes werden serverseitig geprueft und koennen nur einmal eingeloest werden.
+
+## Passwörter zurücksetzen
+
+Die Anwendung verfügt über **keine Passwort-zurücksetzen-Funktion**.
+
+Das gilt sowohl für die Benutzerpasswörter als auch für das Admin-Passwort. Wenn ein Passwort vergessen wurde, kann es nicht über die Benutzeroberfläche per E-Mail oder über einen Zurücksetzen-Link geändert werden. Passwörter sollten daher sicher aufbewahrt werden.
 
 ## Admin-Bereich
 
