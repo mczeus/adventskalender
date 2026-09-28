@@ -37,6 +37,7 @@ Die Anwendung kann auch mit dem **Synology Container Manager** als Compose-Proje
 
 1. Das ZIP auf die Synology kopieren und entpacken, zum Beispiel nach:
 
+<img src="images/zip.png" width="250">
    ```text
    /volume1/docker/weihnachts-gutscheine/
    ```
