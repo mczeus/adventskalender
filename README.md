@@ -218,7 +218,7 @@ Im Admin-Bereich gibt es einen separaten, dauerhaft gespeicherten Bereich **Benu
 
 `FROH` ist dauerhaft vorhanden, kostet 0,00 EUR und ist als mehrfach einlösbarer Code konfiguriert. Er kann von Benutzern wiederholt eingelöst werden und bleibt auch nach dem Löschen aller anderen Codes erhalten.
 
-`GAME` ist ebenfalls dauerhaft vorhanden, kostet 0,00 EUR und kann mehrfach eingelöst werden. Die öffentliche Beschreibung lautet exakt **„Hast du mal das rote Geschenk gecheckt?“**. Der Code kann weder einzeln noch über **„Alle Codes löschen“** entfernt werden. Im Admin-Bereich werden `FROH` und `GAME` als geschützte Codes angezeigt.
+`GAME` ist ebenfalls dauerhaft vorhanden, kostet 0,00 EUR und kann mehrfach eingelöst werden. Die öffentliche Beschreibung lautet exakt **„Hast du mal das rote Geschenk im Adminbereich gecheckt?“**. Der Code kann weder einzeln noch über **„Alle Codes löschen“** entfernt werden. Im Admin-Bereich werden `FROH` und `GAME` als geschützte Codes angezeigt.
 
 
 ## ioBroker-Konfiguration im Admin-Bereich
