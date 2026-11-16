@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -32,6 +33,8 @@ except ZoneInfoNotFoundError:
     APP_TIMEZONE = timezone.utc
 ALL_USERS = "__ALL_USERS__"
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
+MAX_GIF_BYTES = 8 * 1024 * 1024
+MAX_VIDEO_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PIXELS = 12_000_000
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "change-this-session-secret")
 if SESSION_SECRET == "change-this-session-secret":
@@ -202,27 +205,45 @@ def jpeg_dimensions(data):
             break
     return None
 
+def media_type_from_data_uri(value):
+    if not isinstance(value, str) or not value.startswith("data:"):
+        return ""
+    media_type = value[5:].split(";", 1)[0].lower()
+    return media_type if media_type in ("image/jpeg", "image/gif", "video/mp4") else ""
+
 def validate_image_data_uri(value):
-    if not isinstance(value, str) or len(value) > (MAX_IMAGE_BYTES * 4 // 3 + 128):
+    media_type = media_type_from_data_uri(value)
+    limits = {"image/jpeg": MAX_IMAGE_BYTES, "image/gif": MAX_GIF_BYTES, "video/mp4": MAX_VIDEO_BYTES}
+    if not media_type or not value.startswith(f"data:{media_type};base64,"):
         return None
-    prefix = "data:image/jpeg;base64,"
-    if not value.startswith(prefix):
+    encoded = value.split(",", 1)[1]
+    limit = limits[media_type]
+    if len(encoded) > (limit * 4 // 3 + 8):
         return None
     try:
-        raw = base64.b64decode(value[len(prefix):], validate=True)
+        raw = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError):
         return None
-    if not raw or len(raw) > MAX_IMAGE_BYTES:
+    if not raw or len(raw) > limit:
         return None
-    dimensions = jpeg_dimensions(raw)
-    if not dimensions:
-        return None
-    width, height = dimensions
-    if not width or not height or width > 6000 or height > 6000 or width * height > MAX_IMAGE_PIXELS:
-        return None
-    # Require a JPEG end marker to reject incomplete or malformed uploads.
-    if not raw.endswith(b"\xff\xd9"):
-        return None
+    if media_type == "image/jpeg":
+        dimensions = jpeg_dimensions(raw)
+        if not dimensions or not raw.endswith(b"\xff\xd9"):
+            return None
+        width, height = dimensions
+        if not width or not height or width > 6000 or height > 6000 or width * height > MAX_IMAGE_PIXELS:
+            return None
+    elif media_type == "image/gif":
+        if raw[:6] not in (b"GIF87a", b"GIF89a") or not raw.endswith(b"\x3b") or len(raw) < 14:
+            return None
+        width = int.from_bytes(raw[6:8], "little")
+        height = int.from_bytes(raw[8:10], "little")
+        if not width or not height or width > 6000 or height > 6000 or width * height > MAX_IMAGE_PIXELS:
+            return None
+    else:
+        # Require an ISO BMFF ftyp header plus media data and a movie/movie-fragment box.
+        if len(raw) < 16 or raw[4:8] != b"ftyp" or b"mdat" not in raw[8:] or not (b"moov" in raw[8:] or b"moof" in raw[8:]):
+            return None
     return value
 
 def password_hash(password, salt):
@@ -430,6 +451,7 @@ def user_data(user, year=None):
             years.add(entry_year)
         item = dict(row)
         item["redeemed_at"] = format_timestamp(item.get("redeemed_at"))
+        item["media_type"] = media_type_from_data_uri(item.get("image_data"))
         item["image_url"] = f"/api/redemption/{item['id']}/image" if item.get("image_data") else ""
         item.pop("image_data", None)
         if entry_year == year:
@@ -485,7 +507,10 @@ def admin_dashboard(year=None):
     with db() as conn:
         code_rows = conn.execute("""
             SELECT c.code, c.name, c.amount, c.description, c.internal_label, c.active, c.reusable,
-                   CASE WHEN length(c.image_data) > 0 THEN 1 ELSE 0 END AS has_image
+                   CASE WHEN length(c.image_data) > 0 THEN 1 ELSE 0 END AS has_image,
+                   CASE WHEN c.image_data LIKE 'data:video/mp4;base64,%' THEN 'video/mp4'
+                        WHEN c.image_data LIKE 'data:image/gif;base64,%' THEN 'image/gif'
+                        WHEN c.image_data LIKE 'data:image/jpeg;base64,%' THEN 'image/jpeg' ELSE '' END AS media_type
             FROM codes c
             ORDER BY c.name, c.code
         """).fetchall()
@@ -709,19 +734,51 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
     def send_inline_image(self, data_uri):
-        if not isinstance(data_uri, str) or not data_uri.startswith("data:image/jpeg;base64,"):
-            self.send_json({"error": "Bild nicht gefunden."}, 404); return
+        media_type = media_type_from_data_uri(data_uri)
+        if not media_type:
+            self.send_json({"error": "Medium nicht gefunden."}, 404); return
         try:
             data = base64.b64decode(data_uri.split(",", 1)[1], validate=True)
         except (binascii.Error, ValueError):
-            self.send_json({"error": "Bild nicht gefunden."}, 404); return
-        self.send_response(200)
-        self.send_header("Content-Type", "image/jpeg")
-        self.send_header("Content-Length", str(len(data)))
+            self.send_json({"error": "Medium nicht gefunden."}, 404); return
+        size = len(data)
+        range_header = self.headers.get("Range", "")
+        start, end, status = 0, max(0, size - 1), 200
+        if range_header:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip())
+            if not match or size == 0:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                return
+            first, last = match.groups()
+            if not first:
+                suffix = int(last or "0")
+                if suffix <= 0:
+                    self.send_response(416); self.send_header("Content-Range", f"bytes */{size}"); self.end_headers(); return
+                start, end = max(0, size - suffix), size - 1
+            else:
+                start = int(first)
+                end = min(size - 1, int(last)) if last else size - 1
+            if start >= size or start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+                return
+            status = 206
+        payload = data[start:end + 1]
+        self.send_response(status)
+        self.send_header("Content-Type", media_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Accept-Ranges", "bytes")
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.send_header("Cache-Control", "private, no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
-        self.wfile.write(data)
+        self.wfile.write(payload)
 
     def send_binary(self, data, content_type, filename):
         self.send_response(200)
@@ -804,8 +861,8 @@ class Handler(BaseHTTPRequestHandler):
                 image_length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 image_length = -1
-            if not 0 < image_length <= 2_850_000:
-                self.send_json({"error": "Das verkleinerte Bild ist zu groß (maximal 2 MB)."}, 413); return
+            if not 0 < image_length <= 28_500_000:
+                self.send_json({"error": "Datei zu groß. GIF darf maximal 8 MB, MP4 maximal 20 MB und JPEG maximal 2 MB haben."}, 413); return
         if path in ("/api/change-password", "/api/admin/change-password"):
             # Require JSON so a cross-site HTML form cannot submit a password change.
             if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
@@ -954,7 +1011,7 @@ class Handler(BaseHTTPRequestHandler):
             detail = "Code erfolgreich eingeloest."
             log_user_input(user, entered_code, "Erfolgreich", detail)
             sync = sync_iobroker()
-            self.send_json({"ok": True, "entry": {"code": code, "name": user, "amount": voucher["amount"], "description": voucher["description"], "image_url": f"/api/redemption/{redemption_id}/image" if voucher["image_data"] else ""}, "data": user_data(user), "sync": sync}); return
+            self.send_json({"ok": True, "entry": {"code": code, "name": user, "amount": voucher["amount"], "description": voucher["description"], "image_url": f"/api/redemption/{redemption_id}/image" if voucher["image_data"] else "", "media_type": media_type_from_data_uri(voucher["image_data"])}, "data": user_data(user), "sync": sync}); return
         if path == "/api/sync":
             if not session_info(self): self.send_json({"error": "Nicht angemeldet."}, 401); return
             self.send_json(sync_iobroker()); return
@@ -979,7 +1036,7 @@ class Handler(BaseHTTPRequestHandler):
             code = urllib.parse.unquote(path[len("/api/admin/code/"):-len("/image")]).strip("/").upper()
             image_data = validate_image_data_uri(payload.get("image_data") if isinstance(payload, dict) else None)
             if not image_data:
-                self.send_json({"error": "Bild ungültig. Bitte ein JPEG auswählen; es wird beim Upload automatisch verkleinert."}, 400); return
+                self.send_json({"error": "Datei ungültig oder zu groß. Unterstützt werden JPG/PNG/WebP (werden verkleinert), animierte GIFs bis 8 MB und MP4-Videos bis 20 MB."}, 400); return
             with DB_LOCK, db() as conn:
                 result = conn.execute("UPDATE codes SET image_data = ?, updated_at = ? WHERE code = ?", (image_data, now(), code))
                 if result.rowcount == 0:
