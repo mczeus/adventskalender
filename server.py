@@ -775,6 +775,14 @@ class Handler(BaseHTTPRequestHandler):
             if not row or username_key(row["name"]) != username_key(user) or not row["image_data"]:
                 self.send_json({"error": "Bild nicht gefunden."}, 404); return
             self.send_inline_image(row["image_data"])
+        elif path.startswith("/api/admin/code/") and path.endswith("/image"):
+            if not self.require_admin(): return
+            code = urllib.parse.unquote(path[len("/api/admin/code/"):-len("/image")]).strip("/").upper()
+            with db() as conn:
+                row = conn.execute("SELECT image_data FROM codes WHERE code = ?", (code,)).fetchone()
+            if not row or not row["image_data"]:
+                self.send_json({"error": "Bild nicht gefunden."}, 404); return
+            self.send_inline_image(row["image_data"])
         elif path == "/api/admin/dashboard":
             year = parse_year(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("year", [""])[0])
             if self.require_admin(): self.send_json(admin_dashboard(year))
