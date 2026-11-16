@@ -597,50 +597,50 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-if path in ("/api/change-password", "/api/admin/change-password"):
-    # Require JSON so a cross-site HTML form cannot submit a password change.
-    if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
-        self.send_json({"error": "JSON-Anfrage erforderlich."}, 415); return
-    try:
-        length = int(self.headers.get("Content-Length", "0"))
-    except ValueError:
-        length = -1
-    if not 0 < length <= 8192:
-        self.send_json({"error": "Ungültige Anfragegröße."}, 400); return
-payload = json_body(self)
-if path in ("/api/change-password", "/api/admin/change-password"):
-    session = session_info(self)
-    required_kind = "admin" if path.startswith("/api/admin/") else "user"
-    if not session or session["kind"] != required_kind:
-        self.send_json({"error": "Passende Anmeldung erforderlich."}, 401); return
-    if not isinstance(payload, dict):
-        self.send_json({"error": "Ungültige Passwortdaten."}, 400); return
-    old = payload.get("current_password")
-    new = payload.get("new_password")
-    confirm = payload.get("confirm_password")
-    if (not all(isinstance(x, str) for x in (old, new, confirm))
-            or len(old) > 1024 or not 4 <= len(new) <= 1024 or new != confirm):
-        self.send_json({"error": "Das neue Passwort muss mindestens 4 Zeichen lang sein und die Bestätigung muss übereinstimmen."}, 400); return
-    with DB_LOCK, db() as conn:
-        if required_kind == "admin":
-            row = conn.execute("SELECT salt, password_hash FROM admin WHERE id = 1").fetchone()
-        else:
-            row = conn.execute("SELECT salt, password_hash FROM users WHERE name = ?", (session["subject"],)).fetchone()
-        if not row or not hmac.compare_digest(password_hash(old, row["salt"]), row["password_hash"]):
-            self.send_json({"error": "Das bisherige Passwort ist nicht korrekt."}, 403); return
-        salt = secrets.token_hex(16)
-        hashed = password_hash(new, salt)
-        if required_kind == "admin":
-            conn.execute("UPDATE admin SET salt = ?, password_hash = ? WHERE id = 1", (salt, hashed))
-        else:
-            conn.execute("UPDATE users SET salt = ?, password_hash = ? WHERE name = ?", (salt, hashed, session["subject"]))
-        conn.commit()
-        # Keep this session; invalidate other sessions belonging to the same account.
-        for token, entry in list(SESSIONS.items()):
-            if token != session["token"] and entry[0] == required_kind and entry[1] == session["subject"]:
-                SESSIONS.pop(token, None)
-    self.send_json({"ok": True, "message": "Passwort erfolgreich geändert."}); return
-if path == "/api/admin/export/codes":
+        if path in ("/api/change-password", "/api/admin/change-password"):
+            # Require JSON so a cross-site HTML form cannot submit a password change.
+            if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+                self.send_json({"error": "JSON-Anfrage erforderlich."}, 415); return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = -1
+            if not 0 < length <= 8192:
+                self.send_json({"error": "Ungültige Anfragegröße."}, 400); return
+        payload = json_body(self)
+        if path in ("/api/change-password", "/api/admin/change-password"):
+            session = session_info(self)
+            required_kind = "admin" if path.startswith("/api/admin/") else "user"
+            if not session or session["kind"] != required_kind:
+                self.send_json({"error": "Passende Anmeldung erforderlich."}, 401); return
+            if not isinstance(payload, dict):
+                self.send_json({"error": "Ungültige Passwortdaten."}, 400); return
+            old = payload.get("current_password")
+            new = payload.get("new_password")
+            confirm = payload.get("confirm_password")
+            if (not all(isinstance(x, str) for x in (old, new, confirm))
+                    or len(old) > 1024 or not 4 <= len(new) <= 1024 or new != confirm):
+                self.send_json({"error": "Das neue Passwort muss mindestens 4 Zeichen lang sein und die Bestätigung muss übereinstimmen."}, 400); return
+            with DB_LOCK, db() as conn:
+                if required_kind == "admin":
+                    row = conn.execute("SELECT salt, password_hash FROM admin WHERE id = 1").fetchone()
+                else:
+                    row = conn.execute("SELECT salt, password_hash FROM users WHERE name = ?", (session["subject"],)).fetchone()
+                if not row or not hmac.compare_digest(password_hash(old, row["salt"]), row["password_hash"]):
+                    self.send_json({"error": "Das bisherige Passwort ist nicht korrekt."}, 403); return
+                salt = secrets.token_hex(16)
+                hashed = password_hash(new, salt)
+                if required_kind == "admin":
+                    conn.execute("UPDATE admin SET salt = ?, password_hash = ? WHERE id = 1", (salt, hashed))
+                else:
+                    conn.execute("UPDATE users SET salt = ?, password_hash = ? WHERE name = ?", (salt, hashed, session["subject"]))
+                conn.commit()
+                # Keep this session; invalidate other sessions belonging to the same account.
+                for token, entry in list(SESSIONS.items()):
+                    if token != session["token"] and entry[0] == required_kind and entry[1] == session["subject"]:
+                        SESSIONS.pop(token, None)
+            self.send_json({"ok": True, "message": "Passwort erfolgreich geändert."}); return
+        if path == "/api/admin/export/codes":
             if not self.require_admin(): return
             if not isinstance(payload, dict):
                 self.send_json({"error": "Ungültige Exportdaten."}, 400); return
