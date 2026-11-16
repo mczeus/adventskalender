@@ -109,7 +109,23 @@ Das benannte Docker-Volume `gutscheine_data` bleibt dabei erhalten und enthält 
 - Benutzernamen werden ohne Beachtung der Gross-/Kleinschreibung erkannt: `Alex`, `alex` und `ALEX` sind derselbe Benutzer.
 - `Jan` und `Kim` sind nicht mehr als Benutzer vorgegeben. Bereits vorhandene alte Gutscheine können weiterhin diese Besitzerbezeichnungen enthalten und im Admin-Bereich angepasst werden.
 - Passwoerter werden serverseitig als PBKDF2-SHA256-Hash in SQLite gespeichert.
-- Gutschein-Codes werden serverseitig geprueft und koennen nur einmal eingeloest werden.
+- Gutschein-Codes werden serverseitig geprueft und koennen pro Kalenderjahr nur einmal eingeloest werden.
+
+## Jahrestrennung und Historie
+
+Alle Einlösungen und Benutzereingaben werden nach Kalenderjahr getrennt (Zeitzone Europe/Berlin). Am 1. Januar beginnen Kontostand und Summen automatisch wieder bei 0,00 EUR; es wird dabei nichts gelöscht.
+
+- **Benutzer:** Der Kontostand oben zeigt immer das aktuelle Jahr. Bei **Deine eingelösten Codes** kann über **Jahr** die Historie früherer Jahre angezeigt werden.
+- **Admin-Bereich:** Über **Jahr anzeigen** werden Statistik, Summen, eingelöste Codes und Benutzereingaben für das gewählte Jahr angezeigt. Der Status in **Vorhandene Codes** und neue Einlösungen gelten immer für das aktuelle Jahr. **Rückgängig** wirkt nur auf das angezeigte Jahr.
+- **Einmalige Codes:** gelten pro Jahr. Ein Code, der im Vorjahr eingelöst wurde, kann im neuen Jahr wieder eingelöst werden. Das gilt auch für **Alle Benutzer** (einmal pro Benutzer und Jahr).
+- **Löschen:** Einzelne Codes löschen und **Alle Codes löschen** entfernen nur Einlösungen des aktuellen Jahres. Die Historie der Vorjahre bleibt erhalten.
+- **ioBroker:** Es werden nur die Einlösungen und Summen des aktuellen Jahres übertragen.
+
+Bestehende Datenbanken müssen nicht migriert werden: Das Jahr wird aus den vorhandenen Zeitstempeln ermittelt.
+
+## Passwort im angemeldeten Zustand ändern
+
+Angemeldete Benutzer finden **Mein Passwort ändern** in ihrer Ansicht; im Admin-Bereich gibt es **Admin-Passwort ändern**. Jeweils das bisherige Passwort eingeben, das neue Passwort (mindestens vier Zeichen) zweimal eingeben und speichern. Das Passwort wird mit einem neuen Salt als PBKDF2-SHA256-Hash gespeichert. Die aktuelle Sitzung bleibt angemeldet; andere bestehende Sitzungen desselben Kontos werden abgemeldet. Ein Administrator ändert damit nur das eigene Admin-Passwort, nicht die Passwörter anderer Benutzer.
 
 ## Passwörter zurücksetzen
 
@@ -132,7 +148,7 @@ Das gilt sowohl für die Benutzerpasswörter als auch für das Admin-Passwort. W
    - Codes als **immer gültig / mehrfach einlösbar** markieren
    - Änderungen über einen gemeinsamen Speichervorgang zuverlässig in die Datenbank schreiben
    - einzelne Codes vollständig löschen
-   - alle Codes und die Einlösungshistorie vollständig löschen
+   - alle Codes und die Einlösungen des aktuellen Jahres löschen (Vorjahre bleiben erhalten)
    - Einloesungen rueckgaengig machen
    - erneute Synchronisierung mit ioBroker
    - alle Codes als druckbare PDF-Liste exportieren
