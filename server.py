@@ -1,3 +1,5 @@
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -29,6 +31,8 @@ except ZoneInfoNotFoundError:
     print(f"WARNUNG: Zeitzone {TIMEZONE_NAME!r} nicht gefunden; UTC wird verwendet.")
     APP_TIMEZONE = timezone.utc
 ALL_USERS = "__ALL_USERS__"
+MAX_IMAGE_BYTES = 2 * 1024 * 1024
+MAX_IMAGE_PIXELS = 12_000_000
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "change-this-session-secret")
 if SESSION_SECRET == "change-this-session-secret":
     print("WARNING: SESSION_SECRET is still the default value.")
@@ -167,6 +171,60 @@ def validate_iobroker_config(payload, current=None):
         return None
     return {"enabled": enabled, "url": url, "vouchers_datapoint": vouchers, "totals_datapoint": totals_dp}
 
+def jpeg_dimensions(data):
+    if not data.startswith(b"\xff\xd8"):
+        return None
+    index = 2
+    sof_markers = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+    while index + 4 <= len(data):
+        if data[index] != 0xFF:
+            index += 1
+            continue
+        while index < len(data) and data[index] == 0xFF:
+            index += 1
+        if index >= len(data):
+            break
+        marker = data[index]
+        index += 1
+        if marker in (0xD8, 0xD9, 0x01) or 0xD0 <= marker <= 0xD7:
+            continue
+        if index + 2 > len(data):
+            break
+        segment_length = int.from_bytes(data[index:index + 2], "big")
+        if segment_length < 2 or index + segment_length > len(data):
+            break
+        if marker in sof_markers and segment_length >= 7:
+            height = int.from_bytes(data[index + 3:index + 5], "big")
+            width = int.from_bytes(data[index + 5:index + 7], "big")
+            return width, height
+        index += segment_length
+        if marker == 0xDA:
+            break
+    return None
+
+def validate_image_data_uri(value):
+    if not isinstance(value, str) or len(value) > (MAX_IMAGE_BYTES * 4 // 3 + 128):
+        return None
+    prefix = "data:image/jpeg;base64,"
+    if not value.startswith(prefix):
+        return None
+    try:
+        raw = base64.b64decode(value[len(prefix):], validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if not raw or len(raw) > MAX_IMAGE_BYTES:
+        return None
+    dimensions = jpeg_dimensions(raw)
+    if not dimensions:
+        return None
+    width, height = dimensions
+    if not width or not height or width > 6000 or height > 6000 or width * height > MAX_IMAGE_PIXELS:
+        return None
+    # Require a JPEG end marker to reject incomplete or malformed uploads.
+    if not raw.endswith(b"\xff\xd9"):
+        return None
+    return value
+
 def password_hash(password, salt):
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 240000).hex()
 
@@ -175,7 +233,7 @@ def init_db():
     with db() as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS users (name TEXT PRIMARY KEY, salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS admin (id INTEGER PRIMARY KEY CHECK (id = 1), salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
-        conn.execute("CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL DEFAULT '', internal_label TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, reusable INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL DEFAULT '', internal_label TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, reusable INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, image_data TEXT NOT NULL DEFAULT '')")
         try:
             conn.execute("ALTER TABLE codes ADD COLUMN reusable INTEGER NOT NULL DEFAULT 0")
         except sqlite3.OperationalError:
@@ -184,8 +242,16 @@ def init_db():
             conn.execute("ALTER TABLE codes ADD COLUMN internal_label TEXT NOT NULL DEFAULT ''")
         except sqlite3.OperationalError:
             pass
+        try:
+            conn.execute("ALTER TABLE codes ADD COLUMN image_data TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
         conn.execute("CREATE TABLE IF NOT EXISTS redeemed (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL, redeemed_at TEXT NOT NULL)")
-        conn.execute("CREATE TABLE IF NOT EXISTS redemption_events (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL, redeemed_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS redemption_events (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL, redeemed_at TEXT NOT NULL, image_data TEXT NOT NULL DEFAULT '')")
+        try:
+            conn.execute("ALTER TABLE redemption_events ADD COLUMN image_data TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
         conn.execute("CREATE TABLE IF NOT EXISTS user_input_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_name TEXT NOT NULL, entered_code TEXT NOT NULL, result TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         initial_iobroker = default_iobroker_config()
@@ -356,7 +422,7 @@ def user_data(user, year=None):
     this_year = current_year()
     year = this_year if year is None else year
     with db() as conn:
-        rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redemption_events WHERE lower(name) = lower(?) ORDER BY redeemed_at DESC, id DESC", (user,)).fetchall()
+        rows = conn.execute("SELECT id, code, name, amount, description, redeemed_at, image_data FROM redemption_events WHERE lower(name) = lower(?) ORDER BY redeemed_at DESC, id DESC", (user,)).fetchall()
     entries, current_entries, years = [], [], {this_year}
     for row in rows:
         entry_year = timestamp_year(row["redeemed_at"])
@@ -364,6 +430,8 @@ def user_data(user, year=None):
             years.add(entry_year)
         item = dict(row)
         item["redeemed_at"] = format_timestamp(item.get("redeemed_at"))
+        item["image_url"] = f"/api/redemption/{item['id']}/image" if item.get("image_data") else ""
+        item.pop("image_data", None)
         if entry_year == year:
             entries.append(item)
         if entry_year == this_year:
@@ -416,7 +484,8 @@ def admin_dashboard(year=None):
     year = this_year if year is None else year
     with db() as conn:
         code_rows = conn.execute("""
-            SELECT c.code, c.name, c.amount, c.description, c.internal_label, c.active, c.reusable
+            SELECT c.code, c.name, c.amount, c.description, c.internal_label, c.active, c.reusable,
+                   CASE WHEN length(c.image_data) > 0 THEN 1 ELSE 0 END AS has_image
             FROM codes c
             ORDER BY c.name, c.code
         """).fetchall()
@@ -639,6 +708,21 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
+    def send_inline_image(self, data_uri):
+        if not isinstance(data_uri, str) or not data_uri.startswith("data:image/jpeg;base64,"):
+            self.send_json({"error": "Bild nicht gefunden."}, 404); return
+        try:
+            data = base64.b64decode(data_uri.split(",", 1)[1], validate=True)
+        except (binascii.Error, ValueError):
+            self.send_json({"error": "Bild nicht gefunden."}, 404); return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "private, no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(data)
+
     def send_binary(self, data, content_type, filename):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
@@ -678,6 +762,19 @@ class Handler(BaseHTTPRequestHandler):
             user = user_session(self)
             year = parse_year(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("year", [""])[0])
             self.send_json({"authenticated": bool(user), "data": user_data(user, year) if user else None})
+        elif path.startswith("/api/redemption/") and path.endswith("/image"):
+            user = user_session(self)
+            if not user:
+                self.send_json({"error": "Nicht angemeldet."}, 401); return
+            try:
+                event_id = int(path[len("/api/redemption/"):-len("/image")].strip("/"))
+            except ValueError:
+                self.send_json({"error": "Bild nicht gefunden."}, 404); return
+            with db() as conn:
+                row = conn.execute("SELECT name, image_data FROM redemption_events WHERE id = ?", (event_id,)).fetchone()
+            if not row or username_key(row["name"]) != username_key(user) or not row["image_data"]:
+                self.send_json({"error": "Bild nicht gefunden."}, 404); return
+            self.send_inline_image(row["image_data"])
         elif path == "/api/admin/dashboard":
             year = parse_year(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("year", [""])[0])
             if self.require_admin(): self.send_json(admin_dashboard(year))
@@ -690,6 +787,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        is_image_upload = path.startswith("/api/admin/code/") and path.endswith("/image")
+        if is_image_upload:
+            if not self.require_admin(): return
+            if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+                self.send_json({"error": "JSON-Anfrage erforderlich."}, 415); return
+            try:
+                image_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                image_length = -1
+            if not 0 < image_length <= 2_850_000:
+                self.send_json({"error": "Das verkleinerte Bild ist zu groß (maximal 2 MB)."}, 413); return
         if path in ("/api/change-password", "/api/admin/change-password"):
             # Require JSON so a cross-site HTML form cannot submit a password change.
             if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
@@ -805,7 +913,7 @@ class Handler(BaseHTTPRequestHandler):
                 log_user_input(user, entered_code, "Ungueltiges Format", detail)
                 self.send_json({"error": detail}, 400); return
             with db() as conn:
-                voucher = conn.execute("SELECT code, name, amount, description, active, reusable FROM codes WHERE code = ?", (code,)).fetchone()
+                voucher = conn.execute("SELECT code, name, amount, description, active, reusable, image_data FROM codes WHERE code = ?", (code,)).fetchone()
             if not voucher or not voucher["active"]:
                 detail = "Dieser Gutscheincode ist ungueltig oder deaktiviert."
                 log_user_input(user, entered_code, "Ungueltiger Code", detail)
@@ -828,7 +936,8 @@ class Handler(BaseHTTPRequestHandler):
                         if code_used_in_year(conn, code, this_year):
                             raise sqlite3.IntegrityError("one-time code already used this year")
                         conn.execute("INSERT OR REPLACE INTO redeemed VALUES (?, ?, ?, ?, ?)", (code, user, voucher["amount"], voucher["description"], now()))
-                    conn.execute("INSERT INTO redemption_events (code, name, amount, description, redeemed_at) VALUES (?, ?, ?, ?, ?)", (code, user, voucher["amount"], voucher["description"], now()))
+                    redemption_result = conn.execute("INSERT INTO redemption_events (code, name, amount, description, redeemed_at, image_data) VALUES (?, ?, ?, ?, ?, ?)", (code, user, voucher["amount"], voucher["description"], now(), voucher["image_data"] or ""))
+                    redemption_id = redemption_result.lastrowid
                     conn.commit()
             except sqlite3.IntegrityError:
                 detail = "Dieser Code wurde bereits eingeloest."
@@ -837,7 +946,7 @@ class Handler(BaseHTTPRequestHandler):
             detail = "Code erfolgreich eingeloest."
             log_user_input(user, entered_code, "Erfolgreich", detail)
             sync = sync_iobroker()
-            self.send_json({"ok": True, "entry": {"code": code, "name": user, "amount": voucher["amount"], "description": voucher["description"]}, "data": user_data(user), "sync": sync}); return
+            self.send_json({"ok": True, "entry": {"code": code, "name": user, "amount": voucher["amount"], "description": voucher["description"], "image_url": f"/api/redemption/{redemption_id}/image" if voucher["image_data"] else ""}, "data": user_data(user), "sync": sync}); return
         if path == "/api/sync":
             if not session_info(self): self.send_json({"error": "Nicht angemeldet."}, 401); return
             self.send_json(sync_iobroker()); return
@@ -858,6 +967,17 @@ class Handler(BaseHTTPRequestHandler):
             if config is None:
                 self.send_json({"error": "ioBroker-Adresse oder Datenpunkt ist ungueltig."}, 400); return
             self.send_json(test_iobroker(config)); return
+        if is_image_upload:
+            code = urllib.parse.unquote(path[len("/api/admin/code/"):-len("/image")]).strip("/").upper()
+            image_data = validate_image_data_uri(payload.get("image_data") if isinstance(payload, dict) else None)
+            if not image_data:
+                self.send_json({"error": "Bild ungültig. Bitte ein JPEG auswählen; es wird beim Upload automatisch verkleinert."}, 400); return
+            with DB_LOCK, db() as conn:
+                result = conn.execute("UPDATE codes SET image_data = ?, updated_at = ? WHERE code = ?", (image_data, now(), code))
+                if result.rowcount == 0:
+                    self.send_json({"error": "Code nicht gefunden."}, 404); return
+                conn.commit()
+            self.send_json({"ok": True, "data": admin_dashboard(), "message": "Bild gespeichert. Es wird bei künftigen Einlösungen angezeigt."}); return
         if path.startswith("/api/admin/code/") and path.endswith("/save"):
             if not self.require_admin(): return
             code = urllib.parse.unquote(path[len("/api/admin/code/"):-len("/save")]).strip("/").upper()
@@ -957,6 +1077,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         path = urllib.parse.urlparse(self.path).path
         if not self.require_admin(): return
+        if path.startswith("/api/admin/code/") and path.endswith("/image"):
+            code = urllib.parse.unquote(path[len("/api/admin/code/"):-len("/image")]).strip("/").upper()
+            with DB_LOCK, db() as conn:
+                result = conn.execute("UPDATE codes SET image_data = '', updated_at = ? WHERE code = ?", (now(), code))
+                if result.rowcount == 0:
+                    self.send_json({"error": "Code nicht gefunden."}, 404); return
+                conn.commit()
+            self.send_json({"ok": True, "data": admin_dashboard(), "message": "Bild entfernt."}); return
         if path == "/api/admin/codes/all":
             with DB_LOCK, db() as conn:
                 conn.execute("DELETE FROM redeemed")
