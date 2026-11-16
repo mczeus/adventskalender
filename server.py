@@ -209,11 +209,11 @@ def media_type_from_data_uri(value):
     if not isinstance(value, str) or not value.startswith("data:"):
         return ""
     media_type = value[5:].split(";", 1)[0].lower()
-    return media_type if media_type in ("image/jpeg", "image/gif", "video/mp4") else ""
+    return media_type if media_type in ("image/jpeg", "image/gif", "video/mp4", "video/webm") else ""
 
 def validate_image_data_uri(value):
     media_type = media_type_from_data_uri(value)
-    limits = {"image/jpeg": MAX_IMAGE_BYTES, "image/gif": MAX_GIF_BYTES, "video/mp4": MAX_VIDEO_BYTES}
+    limits = {"image/jpeg": MAX_IMAGE_BYTES, "image/gif": MAX_GIF_BYTES, "video/mp4": MAX_VIDEO_BYTES, "video/webm": MAX_VIDEO_BYTES}
     if not media_type or not value.startswith(f"data:{media_type};base64,"):
         return None
     encoded = value.split(",", 1)[1]
@@ -240,9 +240,13 @@ def validate_image_data_uri(value):
         height = int.from_bytes(raw[8:10], "little")
         if not width or not height or width > 6000 or height > 6000 or width * height > MAX_IMAGE_PIXELS:
             return None
-    else:
+    elif media_type == "video/mp4":
         # Require an ISO BMFF ftyp header plus media data and a movie/movie-fragment box.
         if len(raw) < 16 or raw[4:8] != b"ftyp" or b"mdat" not in raw[8:] or not (b"moov" in raw[8:] or b"moof" in raw[8:]):
+            return None
+    elif media_type == "video/webm":
+        # WebM is an EBML container. Check the header, DocType and at least one Cluster.
+        if len(raw) < 32 or not raw.startswith(b"\x1a\x45\xdf\xa3") or b"webm" not in raw[:1024] or b"\x1f\x43\xb6\x75" not in raw:
             return None
     return value
 
@@ -509,6 +513,7 @@ def admin_dashboard(year=None):
             SELECT c.code, c.name, c.amount, c.description, c.internal_label, c.active, c.reusable,
                    CASE WHEN length(c.image_data) > 0 THEN 1 ELSE 0 END AS has_image,
                    CASE WHEN c.image_data LIKE 'data:video/mp4;base64,%' THEN 'video/mp4'
+                        WHEN c.image_data LIKE 'data:video/webm;base64,%' THEN 'video/webm'
                         WHEN c.image_data LIKE 'data:image/gif;base64,%' THEN 'image/gif'
                         WHEN c.image_data LIKE 'data:image/jpeg;base64,%' THEN 'image/jpeg' ELSE '' END AS media_type
             FROM codes c
@@ -862,7 +867,7 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 image_length = -1
             if not 0 < image_length <= 28_500_000:
-                self.send_json({"error": "Datei zu groß. GIF darf maximal 8 MB, MP4 maximal 20 MB und JPEG maximal 2 MB haben."}, 413); return
+                self.send_json({"error": "Datei zu groß. GIF darf maximal 8 MB, MP4/WebM maximal 20 MB und JPEG maximal 2 MB haben."}, 413); return
         if path in ("/api/change-password", "/api/admin/change-password"):
             # Require JSON so a cross-site HTML form cannot submit a password change.
             if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
@@ -1036,7 +1041,7 @@ class Handler(BaseHTTPRequestHandler):
             code = urllib.parse.unquote(path[len("/api/admin/code/"):-len("/image")]).strip("/").upper()
             image_data = validate_image_data_uri(payload.get("image_data") if isinstance(payload, dict) else None)
             if not image_data:
-                self.send_json({"error": "Datei ungültig oder zu groß. Unterstützt werden JPG/PNG/WebP (werden verkleinert), animierte GIFs bis 8 MB und MP4-Videos bis 20 MB."}, 400); return
+                self.send_json({"error": "Datei ungültig oder zu groß. Unterstützt werden JPG/PNG/WebP (werden verkleinert), animierte GIFs bis 8 MB und MP4-/WebM-Videos bis 20 MB."}, 400); return
             with DB_LOCK, db() as conn:
                 result = conn.execute("UPDATE codes SET image_data = ?, updated_at = ? WHERE code = ?", (image_data, now(), code))
                 if result.rowcount == 0:
