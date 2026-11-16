@@ -267,36 +267,117 @@ def json_body(handler):
     except (ValueError, json.JSONDecodeError):
         return {}
 
-def totals():
+def current_year():
+    return datetime.now(APP_TIMEZONE).year
+
+def timestamp_year(value):
+    """Return the local calendar year of a stored timestamp, or None."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(APP_TIMEZONE)
+        return parsed.year
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(text[:10], "%d.%m.%Y").year
+    except ValueError:
+        pass
+    return int(text[:4]) if text[:4].isdigit() else None
+
+def parse_year(value):
+    try:
+        year = int(str(value).strip())
+    except (TypeError, ValueError):
+        return current_year()
+    return year if 2000 <= year <= 2100 else current_year()
+
+def available_years():
+    years = {current_year()}
     with db() as conn:
-        rows = conn.execute("SELECT name, amount FROM redemption_events ORDER BY name").fetchall()
+        for table, column in (("redemption_events", "redeemed_at"), ("user_input_log", "created_at")):
+            for row in conn.execute(f"SELECT DISTINCT {column} AS ts FROM {table}").fetchall():
+                year = timestamp_year(row["ts"])
+                if year:
+                    years.add(year)
+    return sorted(years, reverse=True)
+
+def event_ids_in_year(conn, year, code=None):
+    if code is None:
+        rows = conn.execute("SELECT id, redeemed_at FROM redemption_events").fetchall()
+    else:
+        rows = conn.execute("SELECT id, redeemed_at FROM redemption_events WHERE code = ?", (code,)).fetchall()
+    return [row["id"] for row in rows if timestamp_year(row["redeemed_at"]) == year]
+
+def delete_events_in_year(conn, year, code=None):
+    ids = event_ids_in_year(conn, year, code)
+    for index in range(0, len(ids), 500):
+        chunk = ids[index:index + 500]
+        conn.execute(f"DELETE FROM redemption_events WHERE id IN ({','.join('?' for _ in chunk)})", chunk)
+
+def code_used_in_year(conn, code, year, user=None):
+    if user is None:
+        rows = conn.execute("SELECT redeemed_at FROM redemption_events WHERE code = ?", (code,)).fetchall()
+    else:
+        rows = conn.execute("SELECT redeemed_at FROM redemption_events WHERE code = ? AND lower(name) = lower(?)", (code, user)).fetchall()
+    return any(timestamp_year(row["redeemed_at"]) == year for row in rows)
+
+def totals(year=None):
+    year = current_year() if year is None else year
+    with db() as conn:
+        rows = conn.execute("SELECT name, amount, redeemed_at FROM redemption_events ORDER BY name").fetchall()
     result = {}
     display_names = {}
     for row in rows:
+        if timestamp_year(row["redeemed_at"]) != year:
+            continue
         key = username_key(row["name"])
         display_names.setdefault(key, row["name"])
         result[key] = result.get(key, 0.0) + float(row["amount"])
     return {display_names[key]: round(value, 2) for key, value in sorted(result.items(), key=lambda item: display_names[item[0]].casefold())}
 
-def all_redeemed():
+def all_redeemed(year=None):
+    year = current_year() if year is None else year
     with db() as conn:
         rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redemption_events ORDER BY redeemed_at DESC, id DESC").fetchall()
     result = []
     for row in rows:
+        if timestamp_year(row["redeemed_at"]) != year:
+            continue
         item = dict(row)
         item["redeemed_at"] = format_timestamp(item.get("redeemed_at"))
         result.append(item)
     return result
 
-def user_data(user):
+def user_data(user, year=None):
+    this_year = current_year()
+    year = this_year if year is None else year
     with db() as conn:
         rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redemption_events WHERE lower(name) = lower(?) ORDER BY redeemed_at DESC, id DESC", (user,)).fetchall()
-    entries = []
+    entries, current_entries, years = [], [], {this_year}
     for row in rows:
+        entry_year = timestamp_year(row["redeemed_at"])
+        if entry_year:
+            years.add(entry_year)
         item = dict(row)
         item["redeemed_at"] = format_timestamp(item.get("redeemed_at"))
-        entries.append(item)
-    return {"user": user, "entries": entries, "total": round(sum(float(x["amount"]) for x in entries), 2)}
+        if entry_year == year:
+            entries.append(item)
+        if entry_year == this_year:
+            current_entries.append(item)
+    return {
+        "user": user,
+        "entries": entries,
+        "total": round(sum(float(x["amount"]) for x in entries), 2),
+        "year": year,
+        "current_year": this_year,
+        "years": sorted(years, reverse=True),
+        "current_total": round(sum(float(x["amount"]) for x in current_entries), 2),
+        "current_count": len(current_entries),
+    }
 
 def clean_entered_code(value):
     value = str(value or "").strip()
@@ -315,34 +396,44 @@ def log_user_input(user, entered_code, result, detail=""):
         # Logging must never prevent the actual voucher request from completing.
         print(f"WARNUNG: Benutzereingabe konnte nicht protokolliert werden: {exc}")
 
-def user_input_log():
+def user_input_log(year=None):
+    year = current_year() if year is None else year
     with db() as conn:
         rows = conn.execute(
             "SELECT id, user_name, entered_code, result, detail, created_at FROM user_input_log ORDER BY id DESC"
         ).fetchall()
     result = []
     for row in rows:
+        if timestamp_year(row["created_at"]) != year:
+            continue
         item = dict(row)
         item["created_at"] = format_timestamp(item.get("created_at"))
         result.append(item)
     return result
 
-def admin_dashboard():
+def admin_dashboard(year=None):
+    this_year = current_year()
+    year = this_year if year is None else year
     with db() as conn:
         code_rows = conn.execute("""
-            SELECT c.code, c.name, c.amount, c.description, c.internal_label, c.active, c.reusable,
-                   (SELECT e.name FROM redemption_events e WHERE e.code = c.code ORDER BY e.id DESC LIMIT 1) AS redeemed_by,
-                   (SELECT e.redeemed_at FROM redemption_events e WHERE e.code = c.code ORDER BY e.id DESC LIMIT 1) AS redeemed_at
+            SELECT c.code, c.name, c.amount, c.description, c.internal_label, c.active, c.reusable
             FROM codes c
             ORDER BY c.name, c.code
         """).fetchall()
-    with db() as conn:
+        event_rows = conn.execute("SELECT code, name, redeemed_at FROM redemption_events ORDER BY id").fetchall()
         user_rows = conn.execute("SELECT name FROM users ORDER BY name COLLATE NOCASE").fetchall()
+    # Code status always refers to the current year, because only then can codes be redeemed.
+    latest = {}
+    for row in event_rows:
+        if timestamp_year(row["redeemed_at"]) == this_year:
+            latest[row["code"]] = row
     codes = [dict(row) for row in code_rows]
     for code in codes:
+        event = latest.get(code["code"])
+        code["redeemed_by"] = event["name"] if event else None
+        code["redeemed_at"] = format_timestamp(event["redeemed_at"]) if event else ""
         code["owner_label"] = owner_label(code["name"])
-        code["redeemed_at"] = format_timestamp(code.get("redeemed_at"))
-    return {"users": [row["name"] for row in user_rows], "codes": codes, "redeemed": all_redeemed(), "totals": totals(), "user_inputs": user_input_log(), "iobroker": read_iobroker_config()}
+    return {"users": [row["name"] for row in user_rows], "codes": codes, "redeemed": all_redeemed(year), "totals": totals(year), "user_inputs": user_input_log(year), "iobroker": read_iobroker_config(), "year": year, "current_year": this_year, "years": available_years()}
 
 def sync_iobroker(config=None):
     config = config or read_iobroker_config()
@@ -585,9 +676,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"userConfigured": user_configured, "adminConfigured": admin_configured})
         elif path == "/api/me":
             user = user_session(self)
-            self.send_json({"authenticated": bool(user), "data": user_data(user) if user else None})
+            year = parse_year(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("year", [""])[0])
+            self.send_json({"authenticated": bool(user), "data": user_data(user, year) if user else None})
         elif path == "/api/admin/dashboard":
-            if self.require_admin(): self.send_json(admin_dashboard())
+            year = parse_year(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("year", [""])[0])
+            if self.require_admin(): self.send_json(admin_dashboard(year))
         elif path == "/" or path == "/index.html":
             self.send_file(PUBLIC / "index.html")
         elif path == "/hintergrund.jpg":
@@ -727,17 +820,14 @@ class Handler(BaseHTTPRequestHandler):
                         voucher["name"] == ALL_USERS
                         and not voucher["reusable"]
                     )
+                    this_year = current_year()
                     if all_users_once_per_user:
-                        if conn.execute(
-                            "SELECT 1 FROM redemption_events "
-                            "WHERE code = ? AND lower(name) = lower(?) LIMIT 1",
-                            (code, user)
-                        ).fetchone():
-                            raise sqlite3.IntegrityError("code already used by this user")
+                        if code_used_in_year(conn, code, this_year, user):
+                            raise sqlite3.IntegrityError("code already used by this user this year")
                     elif not voucher["reusable"]:
-                        if conn.execute("SELECT 1 FROM redemption_events WHERE code = ? LIMIT 1", (code,)).fetchone():
-                            raise sqlite3.IntegrityError("one-time code already used")
-                        conn.execute("INSERT INTO redeemed VALUES (?, ?, ?, ?, ?)", (code, user, voucher["amount"], voucher["description"], now()))
+                        if code_used_in_year(conn, code, this_year):
+                            raise sqlite3.IntegrityError("one-time code already used this year")
+                        conn.execute("INSERT OR REPLACE INTO redeemed VALUES (?, ?, ?, ?, ?)", (code, user, voucher["amount"], voucher["description"], now()))
                     conn.execute("INSERT INTO redemption_events (code, name, amount, description, redeemed_at) VALUES (?, ?, ?, ?, ?)", (code, user, voucher["amount"], voucher["description"], now()))
                     conn.commit()
             except sqlite3.IntegrityError:
@@ -832,10 +922,11 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/admin/redeemed/") and path.endswith("/undo"):
             if not self.require_admin(): return
             code = urllib.parse.unquote(path[len("/api/admin/redeemed/"):-len("/undo")]).strip("/").upper()
+            year = parse_year(payload.get("year") if isinstance(payload, dict) else None)
             with DB_LOCK, db() as conn:
                 conn.execute("DELETE FROM redeemed WHERE code = ?", (code,))
-                conn.execute("DELETE FROM redemption_events WHERE code = ?", (code,)); conn.commit()
-            self.send_json({"ok": True, "data": admin_dashboard()}); return
+                delete_events_in_year(conn, year, code); conn.commit()
+            self.send_json({"ok": True, "data": admin_dashboard(year)}); return
         self.send_error(HTTPStatus.NOT_FOUND)
     def do_PUT(self):
         path = urllib.parse.urlparse(self.path).path
@@ -869,7 +960,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/admin/codes/all":
             with DB_LOCK, db() as conn:
                 conn.execute("DELETE FROM redeemed")
-                conn.execute("DELETE FROM redemption_events")
+                delete_events_in_year(conn, current_year())
                 conn.execute("DELETE FROM codes WHERE code NOT IN (?, ?)", ("FROH", "GAME"))
                 timestamp = now()
                 for protected_code in ("FROH", "GAME"):
@@ -886,7 +977,7 @@ class Handler(BaseHTTPRequestHandler):
             with DB_LOCK, db() as conn:
                 result = conn.execute("DELETE FROM codes WHERE code = ?", (code,))
                 conn.execute("DELETE FROM redeemed WHERE code = ?", (code,))
-                conn.execute("DELETE FROM redemption_events WHERE code = ?", (code,))
+                delete_events_in_year(conn, current_year(), code)
                 conn.commit()
             if result.rowcount == 0:
                 self.send_json({"error": "Code nicht gefunden."}, 404); return
@@ -894,11 +985,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "data": admin_dashboard(), "sync": sync}); return
         if path.startswith("/api/admin/redeemed/"):
             code = urllib.parse.unquote(path[len("/api/admin/redeemed/"):]).strip("/").upper()
+            year = parse_year(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("year", [""])[0])
             with DB_LOCK, db() as conn:
                 conn.execute("DELETE FROM redeemed WHERE code = ?", (code,))
-                conn.execute("DELETE FROM redemption_events WHERE code = ?", (code,)); conn.commit()
+                delete_events_in_year(conn, year, code); conn.commit()
             sync = sync_iobroker()
-            self.send_json({"ok": True, "data": admin_dashboard(), "sync": sync}); return
+            self.send_json({"ok": True, "data": admin_dashboard(year), "sync": sync}); return
         self.send_error(HTTPStatus.NOT_FOUND)
 
 if __name__ == "__main__":
