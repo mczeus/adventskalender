@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import time
 import urllib.parse
@@ -522,6 +523,32 @@ def user_input_log(year=None):
         result.append(item)
     return result
 
+def database_storage():
+    """Return filesystem capacity at the database location and SQLite file sizes."""
+    database_path = Path(DB_PATH)
+    database_bytes = 0
+    for suffix in ("", "-wal", "-journal"):
+        try:
+            database_bytes += Path(str(database_path) + suffix).stat().st_size
+        except FileNotFoundError:
+            pass
+    try:
+        usage = shutil.disk_usage(database_path.parent)
+        return {
+            "total_bytes": usage.total,
+            "free_bytes": usage.free,
+            "used_bytes": usage.used,
+            "database_bytes": database_bytes,
+        }
+    except OSError:
+        return {
+            "total_bytes": None,
+            "free_bytes": None,
+            "used_bytes": None,
+            "database_bytes": database_bytes,
+        }
+
+
 def admin_dashboard(year=None):
     this_year = current_year()
     year = this_year if year is None else year
@@ -549,7 +576,7 @@ def admin_dashboard(year=None):
         code["redeemed_by"] = event["name"] if event else None
         code["redeemed_at"] = format_timestamp(event["redeemed_at"]) if event else ""
         code["owner_label"] = owner_label(code["name"])
-    return {"users": [row["name"] for row in user_rows], "codes": codes, "redeemed": all_redeemed(year), "totals": totals(year), "user_inputs": user_input_log(year), "iobroker": read_iobroker_config(), "year": year, "current_year": this_year, "years": available_years()}
+    return {"users": [row["name"] for row in user_rows], "codes": codes, "redeemed": all_redeemed(year), "totals": totals(year), "user_inputs": user_input_log(year), "iobroker": read_iobroker_config(), "storage": database_storage(), "year": year, "current_year": this_year, "years": available_years()}
 
 def sync_iobroker(config=None):
     config = config or read_iobroker_config()
