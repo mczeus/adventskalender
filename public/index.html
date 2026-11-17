@@ -137,7 +137,12 @@ async function prepareCodeImage(file){
 }
 function appendRedemptionMedia(parent,url,type,code,playImmediately=false){
  if(type.startsWith('video/')){
-  const video=document.createElement('video'),autoPlayWebm=playImmediately&&type.toLowerCase().startsWith('video/webm');video.className='redemption-video';video.src=url;video.controls=true;video.playsInline=true;video.preload='metadata';video.autoplay=autoPlayWebm;if(autoPlayWebm)video.muted=true;video.setAttribute('aria-label',`Video zum Gutschein ${code}`);parent.append(video);if(autoPlayWebm){const play=video.play();if(play&&typeof play.catch==='function')play.catch(()=>{})}return;
+  const video=document.createElement('video');video.className='redemption-video';video.src=url;video.controls=true;video.playsInline=true;video.preload='metadata';video.autoplay=playImmediately;video.setAttribute('aria-label',`Video zum Gutschein ${code}`);parent.append(video);
+  if(playImmediately){
+   const playback=video.play();
+   if(playback&&typeof playback.catch==='function')playback.catch(()=>{video.muted=true;const mutedPlayback=video.play();if(mutedPlayback&&typeof mutedPlayback.catch==='function')mutedPlayback.catch(()=>{})});
+  }
+  return;
  }
  const image=document.createElement('img');image.className='redemption-image';image.src=url;image.alt=`Bild zum Gutschein ${code}`;image.dataset.code=code;image.setAttribute('role','button');image.tabIndex=0;image.title='Zum Vergrößern anklicken';image.loading='lazy';parent.append(image)
 }
@@ -146,7 +151,7 @@ function stopSelfieCamera(){if(selfieStream){selfieStream.getTracks().forEach(tr
 function appendSelfieControl(parent,entry){
  const section=document.createElement('div');section.className='selfie-entry';
  if(entry.selfie_url){const image=document.createElement('img');image.className='redemption-image';image.src=entry.selfie_url;image.alt=`Selfie zu Gutschein ${entry.code}`;image.dataset.code=entry.code;image.dataset.mediaType='image/jpeg';image.setAttribute('role','button');image.tabIndex=0;image.title='Selfie vergrößern';section.append(image)}
- const note=document.createElement('span');note.className='image-hint';note.textContent=entry.selfie_url?'Dein Selfie ist gespeichert und für dich sowie den Admin sichtbar.':'Selfie freiwillig aufnehmen und nur dir sowie dem Admin zeigen.';section.append(note);
+ const note=document.createElement('span');note.className='image-hint';note.textContent=entry.selfie_url?'Dein Selfie ist gespeichert und für dich sowie den Admin sichtbar.':'Bock auf Selfie? Mach eins :)';section.append(note);
  const button=document.createElement('button');button.type='button';button.className='secondary';button.dataset.selfieEntry=String(entry.id);button.dataset.selfieCode=entry.code;button.textContent=entry.selfie_url?'Selfie ändern':'Selfie aufnehmen';section.append(button);parent.append(section)
 }
 async function encodeSelfie(source,sourceWidth,sourceHeight){
