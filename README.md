@@ -115,6 +115,10 @@ Das benannte Docker-Volume `gutscheine_data` bleibt dabei erhalten und enthält 
 
 Im Admin-Bereich kann pro Code ein JPG-, PNG-, WebP- oder animiertes GIF-Bild sowie ein MP4- oder WebM-Video hochgeladen, ersetzt oder entfernt werden. JPG/PNG/WebP werden im Browser verkleinert und als JPEG gespeichert; animierte GIFs bleiben animiert. GIFs dürfen bis zu 8 MB groß sein; MP4-Videos bis zu 50 MB und WebM-Videos bis zu 20 MB. Die Medien liegen in der persistenten SQLite-Datenbank. Bereits gespeicherte Medien und die lokale Dateiauswahl werden als Vorschau angezeigt; ein Klick auf ein Bild im Admin- oder Benutzerbereich öffnet die bildschirmfüllende Großansicht. Videos haben Steuerelemente zum Abspielen und Suchen. Nach erfolgreicher Einlösung bleibt das Medium in der persönlichen Jahres-Historie erhalten. Das Entfernen des Mediums am Code beeinflusst bereits eingelöste Gutscheine nicht. Für die Funktion ist keine zusätzliche Docker-Konfiguration erforderlich.
 
+## Schnee und Hintergrundmusik
+
+Der Admin kann Schnee und Hintergrundmusik für alle Besucher zentral aktivieren oder deaktivieren. Jeder angemeldete Benutzer kann beide Effekte zusätzlich persönlich ein- oder ausschalten; die persönliche Auswahl wird im Benutzerkonto gespeichert. Der saisonale Schneefall ist auf Dezember begrenzt und respektiert die Einstellung für reduzierte Bewegung. Im Admin-Bereich können mehrere MP3-Dateien bis zu 20 MB je Datei hochgeladen und entfernt werden; die Titel werden der Reihe nach in einer Schleife abgespielt. Die Webseite versucht den Musikstart automatisch, Browser können Autoplay jedoch blockieren. Dann kann der Benutzer über „Musik starten“ die Wiedergabe freigeben. MP3-Dateien werden in der persistenten Datenbank gespeichert und belegen entsprechend Speicherplatz.
+
 ## Jahrestrennung und Historie
 
 Alle Einlösungen und Benutzereingaben werden nach Kalenderjahr getrennt (Zeitzone Europe/Berlin). Am 1. Januar beginnen Kontostand und Summen automatisch wieder bei 0,00 EUR; es wird dabei nichts gelöscht.

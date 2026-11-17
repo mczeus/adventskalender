@@ -37,6 +37,8 @@ MAX_IMAGE_BYTES = 2 * 1024 * 1024
 MAX_GIF_BYTES = 8 * 1024 * 1024
 MAX_MP4_BYTES = 50 * 1024 * 1024
 MAX_WEBM_BYTES = 20 * 1024 * 1024
+MAX_MP3_BYTES = 20 * 1024 * 1024
+MAX_MP3_JSON_BYTES = 28_500_000
 MAX_IMAGE_PIXELS = 12_000_000
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "change-this-session-secret")
 if SESSION_SECRET == "change-this-session-secret":
@@ -252,6 +254,60 @@ def validate_image_data_uri(value):
             return None
     return value
 
+def validate_mp3_data_uri(value):
+    prefix = "data:audio/mpeg;base64,"
+    if not isinstance(value, str) or not value.startswith(prefix):
+        return None
+    encoded = value[len(prefix):]
+    if len(encoded) > (MAX_MP3_BYTES * 4 // 3 + 8):
+        return None
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if not raw or len(raw) > MAX_MP3_BYTES:
+        return None
+    # Accept standard ID3-tagged MP3 files or a valid-looking MPEG audio frame sync.
+    has_id3 = raw.startswith(b"ID3")
+    has_frame_sync = len(raw) >= 2 and raw[0] == 0xFF and (raw[1] & 0xE0) == 0xE0
+    return raw if has_id3 or has_frame_sync else None
+
+def read_site_effects(conn=None):
+    close = conn is None
+    conn = conn or db()
+    try:
+        rows = conn.execute("SELECT key, value FROM app_meta WHERE key IN ('effects_snow_enabled', 'effects_music_enabled')").fetchall()
+        values = {row["key"]: row["value"] for row in rows}
+        return {
+            "snow_enabled": values.get("effects_snow_enabled", "1") == "1",
+            "music_enabled": values.get("effects_music_enabled", "1") == "1",
+        }
+    finally:
+        if close:
+            conn.close()
+
+def user_effect_preferences(user, conn=None):
+    close = conn is None
+    conn = conn or db()
+    try:
+        row = conn.execute("SELECT snow_enabled, music_enabled FROM effect_preferences WHERE user_name = ? COLLATE NOCASE", (user,)).fetchone()
+        if not row:
+            return {"snow_enabled": True, "music_enabled": True}
+        return {"snow_enabled": bool(row["snow_enabled"]), "music_enabled": bool(row["music_enabled"])}
+    finally:
+        if close:
+            conn.close()
+
+def public_music_tracks(conn=None):
+    close = conn is None
+    conn = conn or db()
+    try:
+        rows = conn.execute("SELECT id, filename, length(audio_data) AS byte_size, created_at FROM background_music_tracks ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        if close:
+            conn.close()
+
 def password_hash(password, salt):
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 240000).hex()
 
@@ -293,7 +349,10 @@ def init_db():
             pass
         conn.execute("CREATE TABLE IF NOT EXISTS user_input_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_name TEXT NOT NULL, entered_code TEXT NOT NULL, result TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS game_highscores (user_name TEXT PRIMARY KEY COLLATE NOCASE, highscore INTEGER NOT NULL DEFAULT 0 CHECK (highscore >= 0), updated_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS effect_preferences (user_name TEXT PRIMARY KEY COLLATE NOCASE, snow_enabled INTEGER NOT NULL DEFAULT 1, music_enabled INTEGER NOT NULL DEFAULT 1)")
+        conn.execute("CREATE TABLE IF NOT EXISTS background_music_tracks (id INTEGER PRIMARY KEY AUTOINCREMENT, filename TEXT NOT NULL, audio_data BLOB NOT NULL, created_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        conn.executemany("INSERT OR IGNORE INTO app_meta (key, value) VALUES (?, '1')", (("effects_snow_enabled",), ("effects_music_enabled",)))
         initial_iobroker = default_iobroker_config()
         write_iobroker_config(conn, {
             "enabled": initial_iobroker["enabled"],
@@ -489,6 +548,7 @@ def user_data(user, year=None):
     with db() as conn:
         rows = conn.execute("SELECT id, code, name, amount, description, redeemed_at, image_data, selfie_data, selfie_enabled FROM redemption_events WHERE lower(name) = lower(?) ORDER BY redeemed_at DESC, id DESC", (user,)).fetchall()
         game_best = user_highscore(user, conn)
+        effects_preferences = user_effect_preferences(user, conn)
     entries, current_entries, years = [], [], {this_year}
     for row in rows:
         entry_year = timestamp_year(row["redeemed_at"])
@@ -516,6 +576,7 @@ def user_data(user, year=None):
         "current_total": round(sum(float(x["amount"]) for x in current_entries), 2),
         "current_count": len(current_entries),
         "highscore": game_best,
+        "effect_preferences": effects_preferences,
     }
 
 def clean_entered_code(value):
@@ -598,6 +659,8 @@ def admin_dashboard(year=None):
             LEFT JOIN game_highscores g ON g.user_name = u.name COLLATE NOCASE
             ORDER BY highscore DESC, u.name COLLATE NOCASE
         """).fetchall()
+        site_effects = read_site_effects(conn)
+        music_tracks = public_music_tracks(conn)
     # Code status always refers to the current year, because only then can codes be redeemed.
     latest = {}
     for row in event_rows:
@@ -609,7 +672,7 @@ def admin_dashboard(year=None):
         code["redeemed_by"] = event["name"] if event else None
         code["redeemed_at"] = format_timestamp(event["redeemed_at"]) if event else ""
         code["owner_label"] = owner_label(code["name"])
-    return {"users": [row["name"] for row in user_rows], "codes": codes, "redeemed": all_redeemed(year), "totals": totals(year), "user_inputs": user_input_log(year), "game_highscores": [dict(row) for row in highscore_rows], "iobroker": read_iobroker_config(), "storage": database_storage(), "year": year, "current_year": this_year, "years": available_years()}
+    return {"users": [row["name"] for row in user_rows], "codes": codes, "redeemed": all_redeemed(year), "totals": totals(year), "user_inputs": user_input_log(year), "game_highscores": [dict(row) for row in highscore_rows], "effects": site_effects, "music_tracks": music_tracks, "iobroker": read_iobroker_config(), "storage": database_storage(), "year": year, "current_year": this_year, "years": available_years()}
 
 def sync_iobroker(config=None):
     config = config or read_iobroker_config()
@@ -862,6 +925,38 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def send_inline_audio(self, data):
+        size = len(data)
+        start, end, status = 0, max(0, size - 1), 200
+        range_header = self.headers.get("Range", "")
+        if range_header:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip())
+            if not match or not size:
+                self.send_response(416); self.send_header("Content-Range", f"bytes */{size}"); self.send_header("Accept-Ranges", "bytes"); self.end_headers(); return
+            first, last = match.groups()
+            if not first:
+                suffix = int(last or "0")
+                if suffix <= 0:
+                    self.send_response(416); self.send_header("Content-Range", f"bytes */{size}"); self.end_headers(); return
+                start, end = max(0, size - suffix), size - 1
+            else:
+                start = int(first)
+                end = min(size - 1, int(last)) if last else size - 1
+            if start >= size or start > end:
+                self.send_response(416); self.send_header("Content-Range", f"bytes */{size}"); self.send_header("Accept-Ranges", "bytes"); self.end_headers(); return
+            status = 206
+        payload = data[start:end + 1]
+        self.send_response(status)
+        self.send_header("Content-Type", "audio/mpeg")
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "public, max-age=3600")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        self.wfile.write(payload)
+
     def send_binary(self, data, content_type, filename):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
@@ -897,6 +992,21 @@ class Handler(BaseHTTPRequestHandler):
                 admin_configured = bool(conn.execute("SELECT 1 FROM admin WHERE id = 1").fetchone())
                 user_configured = bool(requested_user and conn.execute("SELECT 1 FROM users WHERE lower(name) = lower(?)", (requested_user,)).fetchone())
             self.send_json({"userConfigured": user_configured, "adminConfigured": admin_configured})
+        elif path == "/api/effects":
+            user = user_session(self)
+            response = {"global": read_site_effects(), "tracks": public_music_tracks()}
+            if user:
+                response["preferences"] = user_effect_preferences(user)
+            self.send_json(response)
+        elif path.startswith("/api/music/"):
+            track_id = path[len("/api/music/"):].strip("/")
+            if not track_id.isdigit():
+                self.send_json({"error": "Musikstück nicht gefunden."}, 404); return
+            with db() as conn:
+                row = conn.execute("SELECT audio_data FROM background_music_tracks WHERE id = ?", (int(track_id),)).fetchone()
+            if not row:
+                self.send_json({"error": "Musikstück nicht gefunden."}, 404); return
+            self.send_inline_audio(bytes(row["audio_data"]))
         elif path == "/api/me":
             user = user_session(self)
             year = parse_year(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("year", [""])[0])
@@ -949,6 +1059,20 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         is_image_upload = path.startswith("/api/admin/code/") and path.endswith("/image")
         is_selfie_upload = path.startswith("/api/redemption/") and path.endswith("/selfie")
+        is_music_upload = path == "/api/admin/music"
+        if is_music_upload:
+            if not self.require_admin(): return
+            if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+                self.send_json({"error": "JSON-Anfrage erforderlich."}, 415); return
+            try:
+                music_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                music_length = -1
+            if not 0 < music_length <= MAX_MP3_JSON_BYTES:
+                self.send_json({"error": "MP3-Datei zu groß. Eine Datei darf maximal 20 MB haben."}, 413); return
+        if path == "/api/admin/effects" and not self.require_admin(): return
+        if path == "/api/user/effects" and not user_session(self):
+            self.send_json({"error": "Benutzer-Anmeldung erforderlich."}, 401); return
         if is_selfie_upload:
             if not user_session(self):
                 self.send_json({"error": "Nicht angemeldet."}, 401); return
@@ -992,6 +1116,37 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < length <= 8192:
                 self.send_json({"error": "Ungültige Anfragegröße."}, 400); return
         payload = json_body(self)
+        if path == "/api/admin/effects":
+            if not isinstance(payload, dict) or type(payload.get("snow_enabled")) is not bool or type(payload.get("music_enabled")) is not bool:
+                self.send_json({"error": "Bitte beide globalen Schalter gültig setzen."}, 400); return
+            settings = {"snow_enabled": payload["snow_enabled"], "music_enabled": payload["music_enabled"]}
+            with DB_LOCK, db() as conn:
+                conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('effects_snow_enabled', ?)", ("1" if settings["snow_enabled"] else "0",))
+                conn.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('effects_music_enabled', ?)", ("1" if settings["music_enabled"] else "0",))
+                conn.commit()
+            self.send_json({"ok": True, "data": admin_dashboard(), "message": "Globale Effekt-Einstellungen gespeichert."}); return
+        if path == "/api/user/effects":
+            user = user_session(self)
+            if not isinstance(payload, dict) or type(payload.get("snow_enabled")) is not bool or type(payload.get("music_enabled")) is not bool:
+                self.send_json({"error": "Bitte beide persönlichen Schalter gültig setzen."}, 400); return
+            preferences = payload
+            with DB_LOCK, db() as conn:
+                conn.execute("INSERT INTO effect_preferences (user_name, snow_enabled, music_enabled) VALUES (?, ?, ?) ON CONFLICT(user_name) DO UPDATE SET snow_enabled = excluded.snow_enabled, music_enabled = excluded.music_enabled", (user, int(preferences["snow_enabled"]), int(preferences["music_enabled"])))
+                conn.commit()
+            self.send_json({"ok": True, "preferences": user_effect_preferences(user)}); return
+        if is_music_upload:
+            audio_data = validate_mp3_data_uri(payload.get("audio_data") if isinstance(payload, dict) else None)
+            filename = str(payload.get("filename", "")).strip() if isinstance(payload, dict) else ""
+            filename = Path(filename.replace("\\", "/")).name
+            if not filename.lower().endswith(".mp3"):
+                self.send_json({"error": "Bitte eine MP3-Datei auswählen."}, 400); return
+            filename = re.sub(r"[^\w .()\-]", "_", filename, flags=re.UNICODE).strip(" .")[:120] or "Musik.mp3"
+            if not audio_data:
+                self.send_json({"error": "Die Datei ist keine gültige MP3 oder größer als 20 MB."}, 400); return
+            with DB_LOCK, db() as conn:
+                conn.execute("INSERT INTO background_music_tracks (filename, audio_data, created_at) VALUES (?, ?, ?)", (filename, sqlite3.Binary(audio_data), now()))
+                conn.commit()
+            self.send_json({"ok": True, "data": admin_dashboard(), "message": f"{filename} wurde hochgeladen."}); return
         if path == "/api/game/highscore":
             score = payload.get("score") if isinstance(payload, dict) else None
             if type(score) is not int or not 0 <= score <= 100_000_000:
@@ -1288,6 +1443,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         path = urllib.parse.urlparse(self.path).path
         if not self.require_admin(): return
+        if path.startswith("/api/admin/music/"):
+            track_id = path[len("/api/admin/music/"):].strip("/")
+            if not track_id.isdigit():
+                self.send_json({"error": "Musikstück nicht gefunden."}, 404); return
+            with DB_LOCK, db() as conn:
+                result = conn.execute("DELETE FROM background_music_tracks WHERE id = ?", (int(track_id),))
+                if result.rowcount == 0:
+                    self.send_json({"error": "Musikstück nicht gefunden."}, 404); return
+                conn.commit()
+            self.send_json({"ok": True, "data": admin_dashboard(), "message": "MP3 entfernt."}); return
         if path.startswith("/api/admin/code/") and path.endswith("/image"):
             code = urllib.parse.unquote(path[len("/api/admin/code/"):-len("/image")]).strip("/").upper()
             with DB_LOCK, db() as conn:
