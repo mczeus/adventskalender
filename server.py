@@ -1389,6 +1389,7 @@ class Handler(BaseHTTPRequestHandler):
             description = str(payload.get("description", "")).strip()
             internal_label = valid_internal_label(payload.get("internal_label"))
             reusable = 1 if payload.get("reusable") in (True, 1, "true", "on", "yes") else 0
+            selfie_enabled = 1 if payload.get("selfie_enabled") in (True, 1, "true", "on", "yes") else 0
             try: amount = round(float(payload.get("amount", 0)), 2)
             except (TypeError, ValueError): amount = -1
             name = valid_owner(name)
@@ -1396,7 +1397,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Code, Benutzername, interne Bezeichnung oder Betrag ist ungueltig."}, 400); return
             with DB_LOCK, db() as conn:
                 try:
-                    conn.execute("INSERT INTO codes (code, name, amount, description, internal_label, active, reusable, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)", (code, name, amount, description, internal_label, reusable, now(), now()))
+                    conn.execute("INSERT INTO codes (code, name, amount, description, internal_label, active, reusable, selfie_enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?)", (code, name, amount, description, internal_label, reusable, selfie_enabled, now(), now()))
                     conn.commit()
                 except sqlite3.IntegrityError:
                     self.send_json({"error": "Dieser Code existiert bereits."}, 409); return
