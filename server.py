@@ -258,7 +258,7 @@ def init_db():
     with db() as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS users (name TEXT PRIMARY KEY, salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS admin (id INTEGER PRIMARY KEY CHECK (id = 1), salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_at TEXT NOT NULL)")
-        conn.execute("CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL DEFAULT '', internal_label TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, reusable INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, image_data TEXT NOT NULL DEFAULT '')")
+        conn.execute("CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL DEFAULT '', internal_label TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, reusable INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, image_data TEXT NOT NULL DEFAULT '', selfie_enabled INTEGER NOT NULL DEFAULT 0)")
         try:
             conn.execute("ALTER TABLE codes ADD COLUMN reusable INTEGER NOT NULL DEFAULT 0")
         except sqlite3.OperationalError:
@@ -271,10 +271,22 @@ def init_db():
             conn.execute("ALTER TABLE codes ADD COLUMN image_data TEXT NOT NULL DEFAULT ''")
         except sqlite3.OperationalError:
             pass
+        try:
+            conn.execute("ALTER TABLE codes ADD COLUMN selfie_enabled INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         conn.execute("CREATE TABLE IF NOT EXISTS redeemed (code TEXT PRIMARY KEY, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL, redeemed_at TEXT NOT NULL)")
-        conn.execute("CREATE TABLE IF NOT EXISTS redemption_events (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL, redeemed_at TEXT NOT NULL, image_data TEXT NOT NULL DEFAULT '')")
+        conn.execute("CREATE TABLE IF NOT EXISTS redemption_events (id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL, name TEXT NOT NULL, amount REAL NOT NULL, description TEXT NOT NULL, redeemed_at TEXT NOT NULL, image_data TEXT NOT NULL DEFAULT '', selfie_data TEXT NOT NULL DEFAULT '', selfie_enabled INTEGER NOT NULL DEFAULT 0)")
         try:
             conn.execute("ALTER TABLE redemption_events ADD COLUMN image_data TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE redemption_events ADD COLUMN selfie_data TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE redemption_events ADD COLUMN selfie_enabled INTEGER NOT NULL DEFAULT 0")
         except sqlite3.OperationalError:
             pass
         conn.execute("CREATE TABLE IF NOT EXISTS user_input_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_name TEXT NOT NULL, entered_code TEXT NOT NULL, result TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)")
@@ -433,13 +445,15 @@ def totals(year=None):
 def all_redeemed(year=None):
     year = current_year() if year is None else year
     with db() as conn:
-        rows = conn.execute("SELECT code, name, amount, description, redeemed_at FROM redemption_events ORDER BY redeemed_at DESC, id DESC").fetchall()
+        rows = conn.execute("SELECT id, code, name, amount, description, redeemed_at, selfie_data FROM redemption_events ORDER BY redeemed_at DESC, id DESC").fetchall()
     result = []
     for row in rows:
         if timestamp_year(row["redeemed_at"]) != year:
             continue
         item = dict(row)
         item["redeemed_at"] = format_timestamp(item.get("redeemed_at"))
+        item["selfie_url"] = f"/api/redemption/{item['id']}/selfie" if item.get("selfie_data") else ""
+        item.pop("selfie_data", None)
         result.append(item)
     return result
 
@@ -447,7 +461,7 @@ def user_data(user, year=None):
     this_year = current_year()
     year = this_year if year is None else year
     with db() as conn:
-        rows = conn.execute("SELECT id, code, name, amount, description, redeemed_at, image_data FROM redemption_events WHERE lower(name) = lower(?) ORDER BY redeemed_at DESC, id DESC", (user,)).fetchall()
+        rows = conn.execute("SELECT id, code, name, amount, description, redeemed_at, image_data, selfie_data, selfie_enabled FROM redemption_events WHERE lower(name) = lower(?) ORDER BY redeemed_at DESC, id DESC", (user,)).fetchall()
     entries, current_entries, years = [], [], {this_year}
     for row in rows:
         entry_year = timestamp_year(row["redeemed_at"])
@@ -457,7 +471,10 @@ def user_data(user, year=None):
         item["redeemed_at"] = format_timestamp(item.get("redeemed_at"))
         item["media_type"] = media_type_from_data_uri(item.get("image_data"))
         item["image_url"] = f"/api/redemption/{item['id']}/image" if item.get("image_data") else ""
+        item["selfie_url"] = f"/api/redemption/{item['id']}/selfie" if item.get("selfie_data") else ""
+        item["selfie_enabled"] = bool(item.get("selfie_enabled"))
         item.pop("image_data", None)
+        item.pop("selfie_data", None)
         if entry_year == year:
             entries.append(item)
         if entry_year == this_year:
@@ -510,7 +527,7 @@ def admin_dashboard(year=None):
     year = this_year if year is None else year
     with db() as conn:
         code_rows = conn.execute("""
-            SELECT c.code, c.name, c.amount, c.description, c.internal_label, c.active, c.reusable,
+            SELECT c.code, c.name, c.amount, c.description, c.internal_label, c.active, c.reusable, c.selfie_enabled,
                    CASE WHEN length(c.image_data) > 0 THEN 1 ELSE 0 END AS has_image,
                    CASE WHEN c.image_data LIKE 'data:video/mp4;base64,%' THEN 'video/mp4'
                         WHEN c.image_data LIKE 'data:video/webm;base64,%' THEN 'video/webm'
@@ -837,6 +854,19 @@ class Handler(BaseHTTPRequestHandler):
             if not row or username_key(row["name"]) != username_key(user) or not row["image_data"]:
                 self.send_json({"error": "Bild nicht gefunden."}, 404); return
             self.send_inline_image(row["image_data"])
+        elif path.startswith("/api/redemption/") and path.endswith("/selfie"):
+            session = session_info(self)
+            try:
+                event_id = int(path[len("/api/redemption/"):-len("/selfie")].strip("/"))
+            except ValueError:
+                self.send_json({"error": "Selfie nicht gefunden."}, 404); return
+            with db() as conn:
+                row = conn.execute("SELECT name, selfie_data FROM redemption_events WHERE id = ?", (event_id,)).fetchone()
+            is_owner = bool(session and session["kind"] == "user" and row and username_key(row["name"]) == username_key(session["subject"]))
+            is_admin = bool(session and session["kind"] == "admin")
+            if not row or not row["selfie_data"] or not (is_owner or is_admin):
+                self.send_json({"error": "Selfie nicht gefunden."}, 404); return
+            self.send_inline_image(row["selfie_data"])
         elif path.startswith("/api/admin/code/") and path.endswith("/image"):
             if not self.require_admin(): return
             code = urllib.parse.unquote(path[len("/api/admin/code/"):-len("/image")]).strip("/").upper()
@@ -858,6 +888,18 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         is_image_upload = path.startswith("/api/admin/code/") and path.endswith("/image")
+        is_selfie_upload = path.startswith("/api/redemption/") and path.endswith("/selfie")
+        if is_selfie_upload:
+            if not user_session(self):
+                self.send_json({"error": "Nicht angemeldet."}, 401); return
+            if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+                self.send_json({"error": "JSON-Anfrage erforderlich."}, 415); return
+            try:
+                selfie_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                selfie_length = -1
+            if not 0 < selfie_length <= 2_850_000:
+                self.send_json({"error": "Das Selfie ist zu groß. Bitte ein kleineres Bild aufnehmen oder auswählen."}, 413); return
         if is_image_upload:
             if not self.require_admin(): return
             if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
@@ -971,6 +1013,26 @@ class Handler(BaseHTTPRequestHandler):
             session = session_info(self)
             if session: SESSIONS.pop(session["token"], None)
             self.send_json({"ok": True}, cookies=["session=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax"]); return
+        if path.startswith("/api/redemption/") and path.endswith("/selfie"):
+            user = user_session(self)
+            if not user:
+                self.send_json({"error": "Nicht angemeldet."}, 401); return
+            try:
+                event_id = int(path[len("/api/redemption/"):-len("/selfie")].strip("/"))
+            except ValueError:
+                self.send_json({"error": "Einlösung nicht gefunden."}, 404); return
+            selfie_data = payload.get("selfie_data") if isinstance(payload, dict) else None
+            if media_type_from_data_uri(selfie_data) != "image/jpeg" or not validate_image_data_uri(selfie_data):
+                self.send_json({"error": "Bitte ein gültiges JPEG-Foto aufnehmen oder auswählen (maximal 2 MB)."}, 400); return
+            with DB_LOCK, db() as conn:
+                event = conn.execute("SELECT name, selfie_enabled FROM redemption_events WHERE id = ?", (event_id,)).fetchone()
+                if not event or username_key(event["name"]) != username_key(user):
+                    self.send_json({"error": "Einlösung nicht gefunden."}, 404); return
+                if not event["selfie_enabled"]:
+                    self.send_json({"error": "Für diesen Code ist kein Selfie freigeschaltet."}, 403); return
+                conn.execute("UPDATE redemption_events SET selfie_data = ? WHERE id = ?", (selfie_data, event_id))
+                conn.commit()
+            self.send_json({"ok": True, "selfie_url": f"/api/redemption/{event_id}/selfie"}); return
         if path == "/api/redeem":
             user = user_session(self)
             if not user:
@@ -983,7 +1045,7 @@ class Handler(BaseHTTPRequestHandler):
                 log_user_input(user, entered_code, "Ungueltiges Format", detail)
                 self.send_json({"error": detail}, 400); return
             with db() as conn:
-                voucher = conn.execute("SELECT code, name, amount, description, active, reusable, image_data FROM codes WHERE code = ?", (code,)).fetchone()
+                voucher = conn.execute("SELECT code, name, amount, description, active, reusable, image_data, selfie_enabled FROM codes WHERE code = ?", (code,)).fetchone()
             if not voucher or not voucher["active"]:
                 detail = "Dieser Gutscheincode ist ungueltig oder deaktiviert."
                 log_user_input(user, entered_code, "Ungueltiger Code", detail)
@@ -1006,7 +1068,7 @@ class Handler(BaseHTTPRequestHandler):
                         if code_used_in_year(conn, code, this_year):
                             raise sqlite3.IntegrityError("one-time code already used this year")
                         conn.execute("INSERT OR REPLACE INTO redeemed VALUES (?, ?, ?, ?, ?)", (code, user, voucher["amount"], voucher["description"], now()))
-                    redemption_result = conn.execute("INSERT INTO redemption_events (code, name, amount, description, redeemed_at, image_data) VALUES (?, ?, ?, ?, ?, ?)", (code, user, voucher["amount"], voucher["description"], now(), voucher["image_data"] or ""))
+                    redemption_result = conn.execute("INSERT INTO redemption_events (code, name, amount, description, redeemed_at, image_data, selfie_enabled) VALUES (?, ?, ?, ?, ?, ?, ?)", (code, user, voucher["amount"], voucher["description"], now(), voucher["image_data"] or "", int(voucher["selfie_enabled"])))
                     redemption_id = redemption_result.lastrowid
                     conn.commit()
             except sqlite3.IntegrityError:
@@ -1016,7 +1078,7 @@ class Handler(BaseHTTPRequestHandler):
             detail = "Code erfolgreich eingeloest."
             log_user_input(user, entered_code, "Erfolgreich", detail)
             sync = sync_iobroker()
-            self.send_json({"ok": True, "entry": {"code": code, "name": user, "amount": voucher["amount"], "description": voucher["description"], "image_url": f"/api/redemption/{redemption_id}/image" if voucher["image_data"] else "", "media_type": media_type_from_data_uri(voucher["image_data"])}, "data": user_data(user), "sync": sync}); return
+            self.send_json({"ok": True, "entry": {"id": redemption_id, "code": code, "name": user, "amount": voucher["amount"], "description": voucher["description"], "image_url": f"/api/redemption/{redemption_id}/image" if voucher["image_data"] else "", "media_type": media_type_from_data_uri(voucher["image_data"]), "selfie_enabled": bool(voucher["selfie_enabled"]), "selfie_url": ""}, "data": user_data(user), "sync": sync}); return
         if path == "/api/sync":
             if not session_info(self): self.send_json({"error": "Nicht angemeldet."}, 401); return
             self.send_json(sync_iobroker()); return
@@ -1055,6 +1117,7 @@ class Handler(BaseHTTPRequestHandler):
             description = str(payload.get("description", "")).strip()
             internal_label = valid_internal_label(payload.get("internal_label"))
             reusable = 1 if payload.get("reusable") in (True, 1, "true", "on", "yes") else 0
+            selfie_enabled = 1 if payload.get("selfie_enabled") in (True, 1, "true", "on", "yes") else 0
             if code == "GAME":
                 description = CODES["GAME"][2]
                 reusable = 1
@@ -1065,7 +1128,7 @@ class Handler(BaseHTTPRequestHandler):
             if not name or internal_label is None or amount < 0:
                 self.send_json({"error": "Benutzername, interne Bezeichnung oder Betrag ist ungueltig."}, 400); return
             with DB_LOCK, db() as conn:
-                result = conn.execute("UPDATE codes SET name = ?, amount = ?, description = ?, internal_label = ?, reusable = ?, updated_at = ? WHERE code = ?", (name, amount, description, internal_label, reusable, now(), code))
+                result = conn.execute("UPDATE codes SET name = ?, amount = ?, description = ?, internal_label = ?, reusable = ?, selfie_enabled = ?, updated_at = ? WHERE code = ?", (name, amount, description, internal_label, reusable, selfie_enabled, now(), code))
                 if result.rowcount == 0:
                     self.send_json({"error": "Code nicht gefunden."}, 404); return
                 conn.commit()
@@ -1129,6 +1192,7 @@ class Handler(BaseHTTPRequestHandler):
         description = str(payload.get("description", "")).strip()
         internal_label = valid_internal_label(payload.get("internal_label"))
         reusable = 1 if payload.get("reusable") in (True, 1, "true", "on", "yes") else 0
+        selfie_enabled = 1 if payload.get("selfie_enabled") in (True, 1, "true", "on", "yes") else 0
         if code == "GAME":
             description = CODES["GAME"][2]
             reusable = 1
@@ -1139,7 +1203,7 @@ class Handler(BaseHTTPRequestHandler):
         if not name:
             self.send_json({"error": "Benutzername ist ungueltig."}, 400); return
         with DB_LOCK, db() as conn:
-            result = conn.execute("UPDATE codes SET name = ?, amount = ?, description = ?, internal_label = ?, reusable = ?, updated_at = ? WHERE code = ?", (name, amount, description, internal_label, reusable, now(), code))
+            result = conn.execute("UPDATE codes SET name = ?, amount = ?, description = ?, internal_label = ?, reusable = ?, selfie_enabled = ?, updated_at = ? WHERE code = ?", (name, amount, description, internal_label, reusable, selfie_enabled, now(), code))
             if result.rowcount == 0:
                 self.send_json({"error": "Code nicht gefunden."}, 404); return
             conn.commit()
