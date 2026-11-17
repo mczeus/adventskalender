@@ -111,6 +111,10 @@ Das benannte Docker-Volume `gutscheine_data` bleibt dabei erhalten und enthält 
 - Passwoerter werden serverseitig als PBKDF2-SHA256-Hash in SQLite gespeichert.
 - Gutschein-Codes werden serverseitig geprueft und koennen pro Kalenderjahr nur einmal eingeloest werden.
 
+## Bilder an Gutscheincodes
+
+Im Admin-Bereich kann pro Code ein JPG-, PNG-, WebP- oder animiertes GIF-Bild sowie ein MP4- oder WebM-Video hochgeladen, ersetzt oder entfernt werden. JPG/PNG/WebP werden im Browser verkleinert und als JPEG gespeichert; animierte GIFs bleiben animiert. GIFs dürfen bis zu 8 MB groß sein; MP4-Videos bis zu 50 MB und WebM-Videos bis zu 20 MB. Die Medien liegen in der persistenten SQLite-Datenbank. Bereits gespeicherte Medien und die lokale Dateiauswahl werden als Vorschau angezeigt; ein Klick auf ein Bild im Admin- oder Benutzerbereich öffnet die bildschirmfüllende Großansicht. Videos haben Steuerelemente zum Abspielen und Suchen. Nach erfolgreicher Einlösung bleibt das Medium in der persönlichen Jahres-Historie erhalten. Das Entfernen des Mediums am Code beeinflusst bereits eingelöste Gutscheine nicht. Für die Funktion ist keine zusätzliche Docker-Konfiguration erforderlich.
+
 ## Jahrestrennung und Historie
 
 Alle Einlösungen und Benutzereingaben werden nach Kalenderjahr getrennt (Zeitzone Europe/Berlin). Am 1. Januar beginnen Kontostand und Summen automatisch wieder bei 0,00 EUR; es wird dabei nichts gelöscht.

@@ -35,7 +35,8 @@ except ZoneInfoNotFoundError:
 ALL_USERS = "__ALL_USERS__"
 MAX_IMAGE_BYTES = 2 * 1024 * 1024
 MAX_GIF_BYTES = 8 * 1024 * 1024
-MAX_VIDEO_BYTES = 20 * 1024 * 1024
+MAX_MP4_BYTES = 50 * 1024 * 1024
+MAX_WEBM_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PIXELS = 12_000_000
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "change-this-session-secret")
 if SESSION_SECRET == "change-this-session-secret":
@@ -214,7 +215,7 @@ def media_type_from_data_uri(value):
 
 def validate_image_data_uri(value):
     media_type = media_type_from_data_uri(value)
-    limits = {"image/jpeg": MAX_IMAGE_BYTES, "image/gif": MAX_GIF_BYTES, "video/mp4": MAX_VIDEO_BYTES, "video/webm": MAX_VIDEO_BYTES}
+    limits = {"image/jpeg": MAX_IMAGE_BYTES, "image/gif": MAX_GIF_BYTES, "video/mp4": MAX_MP4_BYTES, "video/webm": MAX_WEBM_BYTES}
     if not media_type or not value.startswith(f"data:{media_type};base64,"):
         return None
     encoded = value.split(",", 1)[1]
@@ -967,8 +968,8 @@ class Handler(BaseHTTPRequestHandler):
                 image_length = int(self.headers.get("Content-Length", "0"))
             except ValueError:
                 image_length = -1
-            if not 0 < image_length <= 28_500_000:
-                self.send_json({"error": "Datei zu groß. GIF darf maximal 8 MB, MP4/WebM maximal 20 MB und JPEG maximal 2 MB haben."}, 413); return
+            if not 0 < image_length <= 70_000_000:
+                self.send_json({"error": "Datei zu groß. GIF darf maximal 8 MB, MP4 maximal 50 MB, WebM maximal 20 MB und JPEG maximal 2 MB haben."}, 413); return
         if path == "/api/game/highscore":
             if not user_session(self):
                 self.send_json({"error": "Benutzer-Anmeldung erforderlich."}, 401); return
@@ -1179,7 +1180,7 @@ class Handler(BaseHTTPRequestHandler):
             code = urllib.parse.unquote(path[len("/api/admin/code/"):-len("/image")]).strip("/").upper()
             image_data = validate_image_data_uri(payload.get("image_data") if isinstance(payload, dict) else None)
             if not image_data:
-                self.send_json({"error": "Datei ungültig oder zu groß. Unterstützt werden JPG/PNG/WebP (werden verkleinert), animierte GIFs bis 8 MB und MP4-/WebM-Videos bis 20 MB."}, 400); return
+                self.send_json({"error": "Datei ungültig oder zu groß. Unterstützt werden JPG/PNG/WebP (werden verkleinert), animierte GIFs bis 8 MB, MP4-Videos bis 50 MB und WebM-Videos bis 20 MB."}, 400); return
             with DB_LOCK, db() as conn:
                 result = conn.execute("UPDATE codes SET image_data = ?, updated_at = ? WHERE code = ?", (image_data, now(), code))
                 if result.rowcount == 0:
