@@ -291,6 +291,7 @@ def init_db():
         except sqlite3.OperationalError:
             pass
         conn.execute("CREATE TABLE IF NOT EXISTS user_input_log (id INTEGER PRIMARY KEY AUTOINCREMENT, user_name TEXT NOT NULL, entered_code TEXT NOT NULL, result TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)")
+        conn.execute("CREATE TABLE IF NOT EXISTS game_highscores (user_name TEXT PRIMARY KEY COLLATE NOCASE, highscore INTEGER NOT NULL DEFAULT 0 CHECK (highscore >= 0), updated_at TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         initial_iobroker = default_iobroker_config()
         write_iobroker_config(conn, {
@@ -458,11 +459,35 @@ def all_redeemed(year=None):
         result.append(item)
     return result
 
+def user_highscore(user, conn=None):
+    close = conn is None
+    conn = conn or db()
+    try:
+        row = conn.execute("SELECT highscore FROM game_highscores WHERE user_name = ? COLLATE NOCASE", (user,)).fetchone()
+        return int(row["highscore"]) if row else 0
+    finally:
+        if close:
+            conn.close()
+
+def record_game_highscore(user, score):
+    with DB_LOCK, db() as conn:
+        current = user_highscore(user, conn)
+        if score > current:
+            conn.execute(
+                "INSERT INTO game_highscores (user_name, highscore, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(user_name) DO UPDATE SET highscore = excluded.highscore, updated_at = excluded.updated_at",
+                (user, score, now()),
+            )
+            conn.commit()
+            return score
+        return current
+
 def user_data(user, year=None):
     this_year = current_year()
     year = this_year if year is None else year
     with db() as conn:
         rows = conn.execute("SELECT id, code, name, amount, description, redeemed_at, image_data, selfie_data, selfie_enabled FROM redemption_events WHERE lower(name) = lower(?) ORDER BY redeemed_at DESC, id DESC", (user,)).fetchall()
+        game_best = user_highscore(user, conn)
     entries, current_entries, years = [], [], {this_year}
     for row in rows:
         entry_year = timestamp_year(row["redeemed_at"])
@@ -489,6 +514,7 @@ def user_data(user, year=None):
         "years": sorted(years, reverse=True),
         "current_total": round(sum(float(x["amount"]) for x in current_entries), 2),
         "current_count": len(current_entries),
+        "highscore": game_best,
     }
 
 def clean_entered_code(value):
@@ -565,6 +591,12 @@ def admin_dashboard(year=None):
         """).fetchall()
         event_rows = conn.execute("SELECT code, name, redeemed_at FROM redemption_events ORDER BY id").fetchall()
         user_rows = conn.execute("SELECT name FROM users ORDER BY name COLLATE NOCASE").fetchall()
+        highscore_rows = conn.execute("""
+            SELECT u.name, COALESCE(g.highscore, 0) AS highscore, g.updated_at
+            FROM users u
+            LEFT JOIN game_highscores g ON g.user_name = u.name COLLATE NOCASE
+            ORDER BY highscore DESC, u.name COLLATE NOCASE
+        """).fetchall()
     # Code status always refers to the current year, because only then can codes be redeemed.
     latest = {}
     for row in event_rows:
@@ -576,7 +608,7 @@ def admin_dashboard(year=None):
         code["redeemed_by"] = event["name"] if event else None
         code["redeemed_at"] = format_timestamp(event["redeemed_at"]) if event else ""
         code["owner_label"] = owner_label(code["name"])
-    return {"users": [row["name"] for row in user_rows], "codes": codes, "redeemed": all_redeemed(year), "totals": totals(year), "user_inputs": user_input_log(year), "iobroker": read_iobroker_config(), "storage": database_storage(), "year": year, "current_year": this_year, "years": available_years()}
+    return {"users": [row["name"] for row in user_rows], "codes": codes, "redeemed": all_redeemed(year), "totals": totals(year), "user_inputs": user_input_log(year), "game_highscores": [dict(row) for row in highscore_rows], "iobroker": read_iobroker_config(), "storage": database_storage(), "year": year, "current_year": this_year, "years": available_years()}
 
 def sync_iobroker(config=None):
     config = config or read_iobroker_config()
@@ -937,6 +969,17 @@ class Handler(BaseHTTPRequestHandler):
                 image_length = -1
             if not 0 < image_length <= 28_500_000:
                 self.send_json({"error": "Datei zu groß. GIF darf maximal 8 MB, MP4/WebM maximal 20 MB und JPEG maximal 2 MB haben."}, 413); return
+        if path == "/api/game/highscore":
+            if not user_session(self):
+                self.send_json({"error": "Benutzer-Anmeldung erforderlich."}, 401); return
+            if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+                self.send_json({"error": "JSON-Anfrage erforderlich."}, 415); return
+            try:
+                score_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                score_length = -1
+            if not 0 < score_length <= 4096:
+                self.send_json({"error": "Ungültige Anfragegröße."}, 400); return
         if path in ("/api/change-password", "/api/admin/change-password"):
             # Require JSON so a cross-site HTML form cannot submit a password change.
             if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
@@ -948,6 +991,12 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < length <= 8192:
                 self.send_json({"error": "Ungültige Anfragegröße."}, 400); return
         payload = json_body(self)
+        if path == "/api/game/highscore":
+            score = payload.get("score") if isinstance(payload, dict) else None
+            if type(score) is not int or not 0 <= score <= 100_000_000:
+                self.send_json({"error": "Ungültiger Highscore."}, 400); return
+            best = record_game_highscore(user_session(self), score)
+            self.send_json({"ok": True, "highscore": best}); return
         if path in ("/api/change-password", "/api/admin/change-password"):
             session = session_info(self)
             required_kind = "admin" if path.startswith("/api/admin/") else "user"
